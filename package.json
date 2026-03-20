@@ -1,0 +1,45 @@
+{
+  "name": "blackwall-llm-shield-js",
+  "version": "0.1.0",
+  "description": "Open-source JavaScript enterprise LLM protection toolkit for Node.js and Next.js",
+  "license": "Apache-2.0",
+  "author": "Vish <hello@vish.au> (https://vish.au)",
+  "type": "commonjs",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.js"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vishnud23/blackwall-llm-shield.git"
+  },
+  "homepage": "https://vish.au",
+  "bugs": {
+    "url": "https://github.com/vishnud23/blackwall-llm-shield/issues"
+  },
+  "funding": {
+    "type": "Buy Vish a coffee",
+    "url": "https://vish.au"
+  },
+  "keywords": [
+    "llm",
+    "security",
+    "prompt-injection",
+    "pii",
+    "enterprise",
+    "nextjs",
+    "node"
+  ]
+}

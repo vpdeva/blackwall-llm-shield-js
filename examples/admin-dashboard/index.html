@@ -1,0 +1,693 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Blackwall Command Center</title>
+    <style>
+      :root {
+        --bg: #07111f;
+        --bg-elevated: rgba(10, 24, 42, 0.78);
+        --panel: rgba(12, 31, 52, 0.74);
+        --panel-strong: rgba(17, 40, 67, 0.92);
+        --line: rgba(148, 163, 184, 0.18);
+        --text: #ecf5ff;
+        --muted: #90a8c2;
+        --accent: #6ee7d2;
+        --accent-2: #7dd3fc;
+        --danger: #fb7185;
+        --warning: #fbbf24;
+        --success: #34d399;
+        --shadow: 0 30px 80px rgba(0, 0, 0, 0.35);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        color-scheme: dark;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: "SF Pro Display", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+        color: var(--text);
+        background:
+          radial-gradient(circle at top left, rgba(110, 231, 210, 0.18), transparent 28%),
+          radial-gradient(circle at top right, rgba(125, 211, 252, 0.16), transparent 30%),
+          linear-gradient(145deg, #04101d 0%, #07111f 45%, #0b1b30 100%);
+      }
+
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        background-image:
+          linear-gradient(rgba(148, 163, 184, 0.05) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(148, 163, 184, 0.05) 1px, transparent 1px);
+        background-size: 36px 36px;
+        mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.4), transparent 85%);
+        pointer-events: none;
+      }
+
+      .shell {
+        width: min(1240px, calc(100% - 32px));
+        margin: 24px auto 40px;
+      }
+
+      .hero,
+      .panel {
+        border: 1px solid var(--line);
+        background: var(--bg-elevated);
+        backdrop-filter: blur(22px);
+        box-shadow: var(--shadow);
+      }
+
+      .hero {
+        position: relative;
+        overflow: hidden;
+        border-radius: 28px;
+        padding: 32px;
+      }
+
+      .hero::after {
+        content: "";
+        position: absolute;
+        inset: auto -80px -110px auto;
+        width: 300px;
+        height: 300px;
+        background: radial-gradient(circle, rgba(125, 211, 252, 0.28), transparent 62%);
+        pointer-events: none;
+      }
+
+      .hero-top {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        gap: 20px;
+        align-items: flex-start;
+      }
+
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        padding: 8px 14px;
+        border-radius: 999px;
+        background: rgba(110, 231, 210, 0.1);
+        border: 1px solid rgba(110, 231, 210, 0.16);
+        color: var(--accent);
+        font-size: 12px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.18em;
+      }
+
+      .hero h1 {
+        margin: 16px 0 12px;
+        font-size: clamp(2.4rem, 4vw, 4.8rem);
+        line-height: 0.94;
+        letter-spacing: -0.05em;
+        max-width: 760px;
+      }
+
+      .hero p {
+        margin: 0;
+        max-width: 720px;
+        color: var(--muted);
+        font-size: 1rem;
+        line-height: 1.7;
+      }
+
+      .live-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 14px;
+        border-radius: 999px;
+        background: rgba(251, 113, 133, 0.1);
+        border: 1px solid rgba(251, 113, 133, 0.24);
+        color: #ffd8df;
+        font-size: 0.92rem;
+      }
+
+      .pulse {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: var(--danger);
+        box-shadow: 0 0 0 rgba(251, 113, 133, 0.5);
+        animation: pulse 1.8s infinite;
+      }
+
+      .hero-grid {
+        display: grid;
+        grid-template-columns: 1.2fr 0.8fr;
+        gap: 18px;
+        margin-top: 28px;
+      }
+
+      .panel {
+        border-radius: 24px;
+        padding: 22px;
+      }
+
+      .summary-grid,
+      .detail-grid {
+        display: grid;
+        gap: 18px;
+        margin-top: 18px;
+      }
+
+      .summary-grid {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+      }
+
+      .detail-grid {
+        grid-template-columns: 1.05fr 0.95fr;
+      }
+
+      .metric-card {
+        position: relative;
+        overflow: hidden;
+        border-radius: 22px;
+        padding: 20px;
+        background: linear-gradient(180deg, rgba(17, 40, 67, 0.95), rgba(10, 24, 42, 0.82));
+        border: 1px solid rgba(148, 163, 184, 0.14);
+        transform: translateY(14px);
+        opacity: 0;
+        animation: rise 0.75s ease forwards;
+      }
+
+      .metric-card:nth-child(2) { animation-delay: 0.08s; }
+      .metric-card:nth-child(3) { animation-delay: 0.16s; }
+      .metric-card:nth-child(4) { animation-delay: 0.24s; }
+
+      .metric-card::after {
+        content: "";
+        position: absolute;
+        inset: auto -10% -50% auto;
+        width: 140px;
+        height: 140px;
+        border-radius: 50%;
+        background: radial-gradient(circle, rgba(125, 211, 252, 0.18), transparent 70%);
+      }
+
+      .metric-label {
+        font-size: 0.8rem;
+        text-transform: uppercase;
+        letter-spacing: 0.14em;
+        color: var(--muted);
+      }
+
+      .metric-value {
+        margin: 16px 0 6px;
+        font-size: clamp(2rem, 3vw, 3rem);
+        line-height: 1;
+        letter-spacing: -0.05em;
+      }
+
+      .metric-foot {
+        color: var(--muted);
+        font-size: 0.95rem;
+      }
+
+      .section-title {
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        align-items: center;
+        margin-bottom: 18px;
+      }
+
+      .section-title h2,
+      .section-title h3 {
+        margin: 0;
+        font-size: 1.02rem;
+        letter-spacing: 0.01em;
+      }
+
+      .section-title span {
+        color: var(--muted);
+        font-size: 0.92rem;
+      }
+
+      .kpi-stack {
+        display: grid;
+        gap: 16px;
+      }
+
+      .mini-stat {
+        border-radius: 18px;
+        padding: 16px 18px;
+        background: rgba(12, 31, 52, 0.8);
+        border: 1px solid rgba(148, 163, 184, 0.12);
+      }
+
+      .mini-stat strong {
+        display: block;
+        font-size: 1.55rem;
+        margin-top: 6px;
+      }
+
+      .mini-stat small {
+        color: var(--muted);
+      }
+
+      .bar-chart {
+        display: grid;
+        gap: 14px;
+      }
+
+      .bar-row {
+        display: grid;
+        grid-template-columns: 120px 1fr 44px;
+        gap: 14px;
+        align-items: center;
+      }
+
+      .bar-row label {
+        color: var(--muted);
+        font-size: 0.94rem;
+      }
+
+      .bar-track {
+        width: 100%;
+        height: 12px;
+        border-radius: 999px;
+        background: rgba(148, 163, 184, 0.12);
+        overflow: hidden;
+      }
+
+      .bar-fill {
+        height: 100%;
+        border-radius: inherit;
+        background: linear-gradient(90deg, var(--accent), var(--accent-2));
+      }
+
+      .severity-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 14px;
+      }
+
+      .severity-card {
+        border-radius: 18px;
+        padding: 18px;
+        border: 1px solid rgba(148, 163, 184, 0.14);
+        background: rgba(17, 40, 67, 0.82);
+      }
+
+      .severity-card strong {
+        display: block;
+        font-size: 1.8rem;
+        margin-top: 10px;
+      }
+
+      .severity-card[data-severity="critical"] {
+        outline: 1px solid rgba(251, 113, 133, 0.35);
+      }
+
+      .severity-card[data-severity="critical"] strong {
+        color: var(--danger);
+      }
+
+      .severity-card[data-severity="high"] strong {
+        color: var(--warning);
+      }
+
+      .severity-card[data-severity="warning"] strong {
+        color: var(--accent-2);
+      }
+
+      .alert-list,
+      .activity-list {
+        display: grid;
+        gap: 12px;
+      }
+
+      .alert-item,
+      .activity-item {
+        display: grid;
+        grid-template-columns: auto 1fr auto;
+        gap: 14px;
+        align-items: center;
+        padding: 14px 16px;
+        border-radius: 18px;
+        background: rgba(12, 31, 52, 0.78);
+        border: 1px solid rgba(148, 163, 184, 0.12);
+      }
+
+      .activity-item {
+        grid-template-columns: auto 1fr;
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 84px;
+        padding: 8px 10px;
+        border-radius: 999px;
+        font-size: 0.76rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+      }
+
+      .badge.critical {
+        background: rgba(251, 113, 133, 0.12);
+        color: #ffd4db;
+      }
+
+      .badge.high {
+        background: rgba(251, 191, 36, 0.12);
+        color: #ffe6a6;
+      }
+
+      .badge.warning {
+        background: rgba(125, 211, 252, 0.12);
+        color: #d3f1ff;
+      }
+
+      .alert-meta,
+      .activity-meta {
+        color: var(--muted);
+        font-size: 0.92rem;
+      }
+
+      .alert-item strong,
+      .activity-item strong {
+        display: block;
+        font-size: 1rem;
+        margin-bottom: 4px;
+      }
+
+      .tenant-card {
+        display: grid;
+        gap: 12px;
+      }
+
+      .tenant-row {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 12px;
+        padding-bottom: 12px;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+      }
+
+      .tenant-row:last-child {
+        padding-bottom: 0;
+        border-bottom: 0;
+      }
+
+      .tenant-row strong {
+        display: block;
+        font-size: 1rem;
+      }
+
+      .tenant-row span {
+        color: var(--muted);
+      }
+
+      .footer-note {
+        margin-top: 18px;
+        color: var(--muted);
+        font-size: 0.92rem;
+      }
+
+      @keyframes pulse {
+        0% { box-shadow: 0 0 0 0 rgba(251, 113, 133, 0.5); }
+        70% { box-shadow: 0 0 0 14px rgba(251, 113, 133, 0); }
+        100% { box-shadow: 0 0 0 0 rgba(251, 113, 133, 0); }
+      }
+
+      @keyframes rise {
+        from {
+          transform: translateY(14px);
+          opacity: 0;
+        }
+        to {
+          transform: translateY(0);
+          opacity: 1;
+        }
+      }
+
+      @media (max-width: 980px) {
+        .hero-grid,
+        .detail-grid,
+        .summary-grid,
+        .severity-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .bar-row {
+          grid-template-columns: 1fr;
+        }
+
+        .alert-item {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <div class="hero-top">
+          <div>
+            <div class="eyebrow">Blackwall Security Operations</div>
+            <h1>Command center for hostile prompts, leaks, and risky tool calls.</h1>
+            <p>
+              A polished example admin surface for teams running Blackwall in production.
+              Track blocked requests, inspect severity spikes, surface tenant hotspots,
+              and turn security telemetry into a product story people instantly understand.
+            </p>
+          </div>
+          <div class="live-pill">
+            <span class="pulse"></span>
+            <span>Live monitoring across 3 active tenants</span>
+          </div>
+        </div>
+
+        <div class="hero-grid">
+          <div class="panel">
+            <div class="section-title">
+              <h2>Threat Velocity</h2>
+              <span id="generated-at"></span>
+            </div>
+            <div class="bar-chart" id="type-chart"></div>
+          </div>
+          <div class="panel">
+            <div class="section-title">
+              <h2>Policy Posture</h2>
+              <span>Realtime rollout</span>
+            </div>
+            <div class="kpi-stack">
+              <div class="mini-stat">
+                <small>Prompt injection threshold</small>
+                <strong>High</strong>
+              </div>
+              <div class="mini-stat">
+                <small>Protected routes</small>
+                <strong>17</strong>
+              </div>
+              <div class="mini-stat">
+                <small>Canary leak detections</small>
+                <strong id="canary-count">0</strong>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="summary-grid">
+        <article class="metric-card">
+          <div class="metric-label">Total Events</div>
+          <div class="metric-value" id="total-events">0</div>
+          <div class="metric-foot">Across prompt, tool, and output controls</div>
+        </article>
+        <article class="metric-card">
+          <div class="metric-label">Open Alerts</div>
+          <div class="metric-value" id="open-alerts">0</div>
+          <div class="metric-foot">Incidents currently requiring review</div>
+        </article>
+        <article class="metric-card">
+          <div class="metric-label">Blocked Requests</div>
+          <div class="metric-value" id="blocked-events">0</div>
+          <div class="metric-foot">Prevented before reaching the model</div>
+        </article>
+        <article class="metric-card">
+          <div class="metric-label">Latest Event</div>
+          <div class="metric-value" id="latest-event">n/a</div>
+          <div class="metric-foot">Most recent security telemetry snapshot</div>
+        </article>
+      </section>
+
+      <section class="detail-grid">
+        <article class="panel">
+          <div class="section-title">
+            <h3>Severity Heatmap</h3>
+            <span>Last 24 hours</span>
+          </div>
+          <div class="severity-grid" id="severity-grid"></div>
+        </article>
+
+        <article class="panel">
+          <div class="section-title">
+            <h3>Top Tenants</h3>
+            <span>Attack concentration</span>
+          </div>
+          <div class="tenant-card" id="tenant-list"></div>
+        </article>
+      </section>
+
+      <section class="detail-grid">
+        <article class="panel">
+          <div class="section-title">
+            <h3>Recent Alerts</h3>
+            <span>Prioritized for action</span>
+          </div>
+          <div class="alert-list" id="alert-list"></div>
+        </article>
+
+        <article class="panel">
+          <div class="section-title">
+            <h3>Activity Feed</h3>
+            <span>Operational narrative</span>
+          </div>
+          <div class="activity-list" id="activity-list"></div>
+          <div class="footer-note">
+            Made with love by <a href="https://vish.au" style="color: var(--accent-2);">Vish</a>.
+          </div>
+        </article>
+      </section>
+    </main>
+
+    <script>
+      const model = {
+        generatedAt: new Date().toISOString(),
+        events: {
+          totalEvents: 1284,
+          byType: {
+            llm_request_blocked: 412,
+            llm_request_risky: 536,
+            output_firewall_flagged: 214,
+            tool_call_requires_approval: 76,
+            canary_token_leaked: 46
+          },
+          bySeverity: {
+            critical: 46,
+            high: 388,
+            warning: 850
+          },
+          latestEventAt: new Date(Date.now() - 1000 * 60 * 4).toISOString()
+        },
+        openAlerts: 11,
+        recentAlerts: [
+          {
+            severity: "critical",
+            reason: "Canary token leaked in generated output",
+            tenant: "northstar-health",
+            when: "4m ago"
+          },
+          {
+            severity: "high",
+            reason: "Prompt injection threshold exceeded on /api/chat",
+            tenant: "atlas-finance",
+            when: "11m ago"
+          },
+          {
+            severity: "warning",
+            reason: "Tool call blocked pending human approval",
+            tenant: "meridian-public-sector",
+            when: "16m ago"
+          }
+        ],
+        topTenants: [
+          { name: "atlas-finance", incidents: 302, summary: "High-risk exfiltration attempts targeting advisor workflows" },
+          { name: "northstar-health", incidents: 247, summary: "Repeated PII-heavy prompts and canary exposure events" },
+          { name: "meridian-public-sector", incidents: 188, summary: "Role spoofing and retrieval injection spikes" }
+        ],
+        activityFeed: [
+          { badge: "blocked", title: "Model request blocked before provider call", detail: "System prompt exfiltration pattern matched 3 rules", when: "2m ago" },
+          { badge: "masked", title: "Sensitive identifiers replaced with vault tokens", detail: "Email, TFN, and address fields sanitized for tenant atlas-finance", when: "8m ago" },
+          { badge: "review", title: "Approval gate triggered for search tool", detail: "Analyst review required before external retrieval execution", when: "14m ago" }
+        ]
+      };
+
+      const maxTypeValue = Math.max(...Object.values(model.events.byType));
+      const blockedEvents = model.events.byType.llm_request_blocked || 0;
+      const canaryCount = model.events.byType.canary_token_leaked || 0;
+
+      document.getElementById("generated-at").textContent = `Updated ${new Date(model.generatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+      document.getElementById("total-events").textContent = model.events.totalEvents.toLocaleString();
+      document.getElementById("open-alerts").textContent = model.openAlerts.toLocaleString();
+      document.getElementById("blocked-events").textContent = blockedEvents.toLocaleString();
+      document.getElementById("latest-event").textContent = new Date(model.events.latestEventAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      document.getElementById("canary-count").textContent = canaryCount.toLocaleString();
+
+      document.getElementById("type-chart").innerHTML = Object.entries(model.events.byType)
+        .map(([label, value]) => {
+          const width = Math.max(12, Math.round((value / maxTypeValue) * 100));
+          return `
+            <div class="bar-row">
+              <label>${label.replaceAll("_", " ")}</label>
+              <div class="bar-track"><div class="bar-fill" style="width:${width}%"></div></div>
+              <strong>${value}</strong>
+            </div>
+          `;
+        })
+        .join("");
+
+      document.getElementById("severity-grid").innerHTML = Object.entries(model.events.bySeverity)
+        .map(([severity, value]) => `
+          <div class="severity-card" data-severity="${severity}">
+            <span>${severity.toUpperCase()}</span>
+            <strong>${value}</strong>
+            <div class="alert-meta">Events routed through the ${severity} lane.</div>
+          </div>
+        `)
+        .join("");
+
+      document.getElementById("tenant-list").innerHTML = model.topTenants
+        .map((tenant) => `
+          <div class="tenant-row">
+            <div>
+              <strong>${tenant.name}</strong>
+              <span>${tenant.summary}</span>
+            </div>
+            <strong>${tenant.incidents}</strong>
+          </div>
+        `)
+        .join("");
+
+      document.getElementById("alert-list").innerHTML = model.recentAlerts
+        .map((alert) => `
+          <div class="alert-item">
+            <div class="badge ${alert.severity}">${alert.severity}</div>
+            <div>
+              <strong>${alert.reason}</strong>
+              <div class="alert-meta">${alert.tenant}</div>
+            </div>
+            <div class="alert-meta">${alert.when}</div>
+          </div>
+        `)
+        .join("");
+
+      document.getElementById("activity-list").innerHTML = model.activityFeed
+        .map((item) => `
+          <div class="activity-item">
+            <div class="badge warning">${item.badge}</div>
+            <div>
+              <strong>${item.title}</strong>
+              <div class="activity-meta">${item.detail} · ${item.when}</div>
+            </div>
+          </div>
+        `)
+        .join("");
+    </script>
+  </body>
+</html>
