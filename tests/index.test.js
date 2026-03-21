@@ -22,8 +22,11 @@ const {
   injectCanaryTokens,
   detectCanaryLeakage,
   rehydrateResponse,
+  encryptVaultForClient,
+  rehydrateFromZeroKnowledgeBundle,
   AuditTrail,
   POLICY_PACKS,
+  ShadowAIDiscovery,
   VisualInstructionDetector,
 } = require('../src');
 const { BlackwallLangChainCallback } = require('../src/integrations');
@@ -270,4 +273,48 @@ test('tool firewall can block agent sessions that violate rule of two', () => {
   });
   assert.equal(result.allowed, false);
   assert.match(result.reason, /Rule of Two/);
+});
+
+test('tool firewall emits jit approval payloads for risky tools', async () => {
+  const approvals = [];
+  const firewall = new ToolPermissionFirewall({
+    allowedTools: ['send_email'],
+    requireHumanApprovalFor: ['send_email'],
+    onApprovalRequest: async (payload) => approvals.push(payload),
+  });
+  const result = await firewall.inspectCallAsync({ tool: 'send_email', args: { to: 'a@example.com' }, context: { agentId: 'agent-3' } });
+  assert.equal(result.requiresApproval, true);
+  assert.equal(approvals.length, 1);
+});
+
+test('agent identity registry can issue and verify ephemeral tokens', () => {
+  const registry = new AgentIdentityRegistry();
+  registry.register('agent-ephemeral');
+  const issued = registry.issueEphemeralToken('agent-ephemeral', { ttlMs: 1000 });
+  const verified = registry.verifyEphemeralToken(issued.token);
+  assert.equal(verified.valid, true);
+  assert.equal(verified.agentId, 'agent-ephemeral');
+});
+
+test('audit trail preserves provenance for cross-agent traceability', () => {
+  const event = new AuditTrail().record({ type: 'tool_call', agentId: 'agent-a', parentAgentId: 'agent-root', sessionId: 'sess-1' });
+  assert.equal(event.provenance.agentId, 'agent-a');
+  assert.equal(event.provenance.parentAgentId, 'agent-root');
+});
+
+test('shadow ai discovery identifies unprotected agents', () => {
+  const result = new ShadowAIDiscovery().inspect([
+    { id: 'a1', blackwallProtected: false, externalCommunication: true },
+    { id: 'a2', blackwallProtected: true },
+  ]);
+  assert.equal(result.unprotectedAgents, 1);
+  assert.match(result.summary, /unprotected agents/);
+});
+
+test('zero-knowledge vault bundle can rehydrate entirely client-side', async () => {
+  const masked = maskValue('Email Alice Johnson at ceo@example.com', { detectNamedEntities: true });
+  const bundle = await encryptVaultForClient(masked.vault, 'super-secret');
+  const restored = await rehydrateFromZeroKnowledgeBundle(masked.masked, bundle, 'super-secret');
+  assert.match(restored, /Alice Johnson/);
+  assert.match(restored, /ceo@example.com/);
 });

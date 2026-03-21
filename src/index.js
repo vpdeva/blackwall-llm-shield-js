@@ -942,6 +942,7 @@ class CoTScanner {
 class AgentIdentityRegistry {
   constructor() {
     this.identities = new Map();
+    this.ephemeralTokens = new Map();
   }
 
   register(agentId, profile = {}) {
@@ -952,6 +953,24 @@ class AgentIdentityRegistry {
 
   get(agentId) {
     return this.identities.get(agentId) || null;
+  }
+
+  issueEphemeralToken(agentId, options = {}) {
+    const ttlMs = options.ttlMs || 5 * 60 * 1000;
+    const token = `nhi_${crypto.randomBytes(12).toString('hex')}`;
+    const expiresAt = Date.now() + ttlMs;
+    this.ephemeralTokens.set(token, { agentId, expiresAt });
+    return { token, agentId, expiresAt: new Date(expiresAt).toISOString() };
+  }
+
+  verifyEphemeralToken(token) {
+    const record = this.ephemeralTokens.get(token);
+    if (!record) return { valid: false, agentId: null };
+    if (record.expiresAt < Date.now()) {
+      this.ephemeralTokens.delete(token);
+      return { valid: false, agentId: record.agentId };
+    }
+    return { valid: true, agentId: record.agentId };
   }
 }
 
@@ -1094,6 +1113,8 @@ class ToolPermissionFirewall {
       validators: {},
       requireHumanApprovalFor: [],
       capabilityGater: null,
+      onApprovalRequest: null,
+      approvalWebhookUrl: null,
       ...options,
     };
   }
@@ -1122,7 +1143,32 @@ class ToolPermissionFirewall {
       }
     }
     const requiresApproval = this.options.requireHumanApprovalFor.includes(tool);
-    return { allowed: !requiresApproval, reason: requiresApproval ? `Tool ${tool} requires human approval` : null, requiresApproval };
+    return {
+      allowed: !requiresApproval,
+      reason: requiresApproval ? `Tool ${tool} requires human approval` : null,
+      requiresApproval,
+      approvalRequest: requiresApproval ? { tool, args, context } : null,
+    };
+  }
+
+  async inspectCallAsync(input = {}) {
+    const result = this.inspectCall(input);
+    if (result.requiresApproval) {
+      if (typeof this.options.onApprovalRequest === 'function') {
+        await this.options.onApprovalRequest(result.approvalRequest);
+      }
+      if (this.options.approvalWebhookUrl && typeof fetch === 'function') {
+        await fetch(this.options.approvalWebhookUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'blackwall_jit_approval',
+            ...result.approvalRequest,
+          }),
+        });
+      }
+    }
+    return result;
   }
 }
 
@@ -1199,6 +1245,11 @@ class AuditTrail {
         ...(event.ruleIds || []),
         event.type === 'retrieval_poisoning_detected' ? 'retrieval_poisoning' : null,
       ].filter(Boolean)),
+      provenance: event.provenance || {
+        agentId: event.agentId || null,
+        parentAgentId: event.parentAgentId || null,
+        sessionId: event.sessionId || null,
+      },
       timestamp: new Date().toISOString(),
     };
     const serialized = JSON.stringify(payload);
@@ -1241,6 +1292,79 @@ function rehydrateResponse(maskedText, vault = {}) {
     text = text.split(token).join(vault[token]);
   });
   return text;
+}
+
+async function encryptVaultForClient(vault = {}, secret = '') {
+  const subtle = crypto.webcrypto && crypto.webcrypto.subtle;
+  if (!subtle) throw new Error('Web Crypto is not available');
+  const encoder = new TextEncoder();
+  const salt = crypto.randomBytes(16);
+  const iv = crypto.randomBytes(12);
+  const keyMaterial = await subtle.importKey('raw', encoder.encode(secret), 'PBKDF2', false, ['deriveKey']);
+  const key = await subtle.deriveKey(
+    { name: 'PBKDF2', salt, iterations: 100000, hash: 'SHA-256' },
+    keyMaterial,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt']
+  );
+  const ciphertext = await subtle.encrypt({ name: 'AES-GCM', iv }, key, encoder.encode(JSON.stringify(vault)));
+  return {
+    strategy: 'aes-gcm-pbkdf2',
+    salt: Buffer.from(salt).toString('base64'),
+    iv: Buffer.from(iv).toString('base64'),
+    ciphertext: Buffer.from(ciphertext).toString('base64'),
+  };
+}
+
+async function decryptVaultForClient(bundle = {}, secret = '') {
+  const subtle = crypto.webcrypto && crypto.webcrypto.subtle;
+  if (!subtle) throw new Error('Web Crypto is not available');
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+  const salt = Buffer.from(bundle.salt || '', 'base64');
+  const iv = Buffer.from(bundle.iv || '', 'base64');
+  const ciphertext = Buffer.from(bundle.ciphertext || '', 'base64');
+  const keyMaterial = await subtle.importKey('raw', encoder.encode(secret), 'PBKDF2', false, ['deriveKey']);
+  const key = await subtle.deriveKey(
+    { name: 'PBKDF2', salt, iterations: 100000, hash: 'SHA-256' },
+    keyMaterial,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['decrypt']
+  );
+  const plaintext = await subtle.decrypt({ name: 'AES-GCM', iv }, key, ciphertext);
+  return JSON.parse(decoder.decode(plaintext));
+}
+
+async function rehydrateFromZeroKnowledgeBundle(maskedText, bundle = {}, secret = '') {
+  const vault = await decryptVaultForClient(bundle, secret);
+  return rehydrateResponse(maskedText, vault);
+}
+
+class ShadowAIDiscovery {
+  inspect(agents = []) {
+    const records = (Array.isArray(agents) ? agents : []).map((agent, index) => {
+      const exposed = !!agent.externalCommunication || !!agent.networkAccess;
+      const autonomous = !!agent.autonomous || !!agent.agentic;
+      const unprotected = !agent.blackwallProtected && !agent.guardrailsInstalled;
+      return {
+        id: agent.id || `agent_${index + 1}`,
+        name: agent.name || agent.id || `agent_${index + 1}`,
+        protected: !unprotected,
+        exposed,
+        autonomous,
+        risk: (unprotected && exposed) || (autonomous && unprotected) ? 'high' : unprotected ? 'medium' : 'low',
+      };
+    });
+    const unprotectedAgents = records.filter((item) => !item.protected);
+    return {
+      totalAgents: records.length,
+      unprotectedAgents: unprotectedAgents.length,
+      records,
+      summary: unprotectedAgents.length ? `You have ${unprotectedAgents.length} unprotected agents running right now.` : 'No unprotected agents detected.',
+    };
+  }
 }
 
 function summarizeSecurityEvents(events = []) {
@@ -1395,6 +1519,10 @@ module.exports = {
   injectCanaryTokens,
   detectCanaryLeakage,
   rehydrateResponse,
+  encryptVaultForClient,
+  decryptVaultForClient,
+  rehydrateFromZeroKnowledgeBundle,
+  ShadowAIDiscovery,
   summarizeSecurityEvents,
   buildAdminDashboardModel,
   getRedTeamPromptLibrary,
