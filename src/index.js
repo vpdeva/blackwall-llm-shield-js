@@ -140,6 +140,18 @@ const RETRIEVAL_POISONING_RULES = [
   { id: 'exfiltration', severity: 'high', regex: /\b(reveal|dump|print|return)\b.{0,40}\b(secret|token|api key|system prompt|hidden instructions?)\b/i, reason: 'Retrieved content attempts to exfiltrate sensitive instructions or data' },
   { id: 'hidden_action', severity: 'medium', regex: /\b(do not tell the user|secretly|without mentioning|privately)\b/i, reason: 'Retrieved content attempts to hide model behavior from the user' },
 ];
+const COMPLIANCE_MAP = {
+  secret_exfiltration: ['LLM06:2025 Sensitive Information Disclosure', 'NIST AI RMF: Govern 2.3'],
+  reveal_system_prompt: ['LLM07:2025 System Prompt Leakage', 'NIST AI RMF: Map 2.1'],
+  tool_exfiltration: ['LLM06:2025 Sensitive Information Disclosure'],
+  policy_bypass: ['LLM01:2025 Prompt Injection'],
+  ignore_instructions: ['LLM01:2025 Prompt Injection'],
+  system_prompt_leak: ['LLM07:2025 System Prompt Leakage'],
+  secret_leak: ['LLM06:2025 Sensitive Information Disclosure'],
+  unsafe_code: ['LLM02:2025 Insecure Output Handling'],
+  token_budget_exceeded: ['NIST AI RMF: Govern 3.2', 'LLM10:2025 Resource Exhaustion'],
+  retrieval_poisoning: ['LLM04:2025 Data and Model Poisoning'],
+};
 
 function sanitizeText(input, maxLength = 5000) {
   if (typeof input !== 'string') return '';
@@ -176,6 +188,15 @@ function compareRisk(actual, threshold) {
 
 function severityWeight(level) {
   return RISK_ORDER.indexOf(level);
+}
+
+function estimateTokenCount(value) {
+  const text = typeof value === 'string' ? value : JSON.stringify(value || '');
+  return Math.max(1, Math.ceil(text.length / 4));
+}
+
+function mapCompliance(ids = []) {
+  return [...new Set(ids.flatMap((id) => COMPLIANCE_MAP[id] || []))];
 }
 
 function cloneRegex(regex) {
@@ -273,6 +294,18 @@ function maybeDecodeRot13(segment) {
   });
   if (decoded === segment) return null;
   return decoded;
+}
+
+function applyDifferentialPrivacyNoise(text, options = {}) {
+  if (!options.differentialPrivacy) return text;
+  const epsilon = Number(options.differentialPrivacyEpsilon || 1);
+  const magnitude = epsilon >= 1 ? 1 : 2;
+  return String(text).replace(/\b\d{1,4}\b/g, (match) => {
+    const value = Number(match);
+    if (Number.isNaN(value)) return match;
+    const noise = value >= 1900 ? magnitude : Math.max(1, Math.round(magnitude / 2));
+    return String(value + noise);
+  });
 }
 
 function normalizeLeetspeak(text) {
@@ -408,7 +441,7 @@ function maskText(text, options = {}) {
   const vault = {};
   const findings = [];
   const counters = {};
-  let masked = sanitized;
+  let masked = applyDifferentialPrivacyNoise(sanitized, options);
 
   for (const [type, regex] of Object.entries(SENSITIVE_PATTERNS)) {
     counters[type] = 0;
@@ -629,6 +662,57 @@ function evaluatePolicyPack(injection, name, fallbackThreshold) {
   };
 }
 
+class SessionBuffer {
+  constructor(options = {}) {
+    this.maxTurns = options.maxTurns || 10;
+    this.entries = [];
+  }
+
+  record(text) {
+    const deobfuscated = deobfuscateText(text, { maxLength: 5000 });
+    this.entries.push(deobfuscated.inspectedText);
+    this.entries = this.entries.slice(-this.maxTurns);
+  }
+
+  render() {
+    return this.entries.join('\n');
+  }
+
+  clear() {
+    this.entries = [];
+  }
+}
+
+class TokenBudgetFirewall {
+  constructor(options = {}) {
+    this.maxTokensPerUser = options.maxTokensPerUser || 8000;
+    this.maxTokensPerTenant = options.maxTokensPerTenant || 40000;
+    this.userBudgets = new Map();
+    this.tenantBudgets = new Map();
+  }
+
+  inspect({ userId = 'anonymous', tenantId = 'default', messages = [] } = {}) {
+    const estimatedTokens = estimateTokenCount(messages);
+    const nextUser = (this.userBudgets.get(userId) || 0) + estimatedTokens;
+    const nextTenant = (this.tenantBudgets.get(tenantId) || 0) + estimatedTokens;
+    const allowed = nextUser <= this.maxTokensPerUser && nextTenant <= this.maxTokensPerTenant;
+    if (allowed) {
+      this.userBudgets.set(userId, nextUser);
+      this.tenantBudgets.set(tenantId, nextTenant);
+    }
+    return {
+      allowed,
+      estimatedTokens,
+      userId,
+      tenantId,
+      userUsage: nextUser,
+      tenantUsage: nextTenant,
+      reason: allowed ? null : 'Token budget exceeded for user or tenant',
+      complianceMap: allowed ? [] : mapCompliance(['token_budget_exceeded']),
+    };
+  }
+}
+
 class BlackwallShield {
   constructor(options = {}) {
     this.options = {
@@ -643,7 +727,11 @@ class BlackwallShield {
       policyPack: null,
       shadowPolicyPacks: [],
       entityDetectors: [],
+      detectNamedEntities: false,
       semanticScorer: null,
+      sessionBuffer: null,
+      tokenBudgetFirewall: null,
+      systemPrompt: null,
       onAlert: null,
       webhookUrl: null,
       ...options,
@@ -683,7 +771,15 @@ class BlackwallShield {
       maxLength: this.options.maxLength,
       allowSystemMessages,
     });
-    const injection = detectPromptInjection(normalizedMessages.filter((msg) => msg.role !== 'assistant'), this.options);
+    const promptCandidate = normalizedMessages.filter((msg) => msg.role !== 'assistant');
+    const sessionBuffer = this.options.sessionBuffer;
+    if (sessionBuffer && typeof sessionBuffer.record === 'function') {
+      promptCandidate.forEach((msg) => sessionBuffer.record(msg.content));
+    }
+    const sessionContext = sessionBuffer && typeof sessionBuffer.render === 'function'
+      ? sessionBuffer.render()
+      : promptCandidate;
+    const injection = detectPromptInjection(sessionContext, this.options);
 
     const primaryPolicy = resolvePolicyPack(this.options.policyPack);
     const threshold = (primaryPolicy && primaryPolicy.promptInjectionThreshold) || this.options.promptInjectionThreshold;
@@ -692,6 +788,13 @@ class BlackwallShield {
     const shouldNotify = compareRisk(injection.level, this.options.notifyOnRiskLevel);
     const policyNames = [...new Set([...(this.options.shadowPolicyPacks || []), ...comparePolicyPacks].filter(Boolean))];
     const policyComparisons = policyNames.map((name) => evaluatePolicyPack(injection, name, this.options.promptInjectionThreshold));
+    const budgetResult = this.options.tokenBudgetFirewall && typeof this.options.tokenBudgetFirewall.inspect === 'function'
+      ? this.options.tokenBudgetFirewall.inspect({
+        userId: metadata.userId || metadata.user_id || 'anonymous',
+        tenantId: metadata.tenantId || metadata.tenant_id || 'default',
+        messages: normalizedMessages,
+      })
+      : { allowed: true, estimatedTokens: estimateTokenCount(normalizedMessages) };
 
     const report = {
       package: 'blackwall-llm-shield-js',
@@ -705,12 +808,13 @@ class BlackwallShield {
       },
       enforcement: {
         shadowMode: this.options.shadowMode,
-        wouldBlock,
-        blocked: shouldBlock,
+        wouldBlock: wouldBlock || !budgetResult.allowed,
+        blocked: shouldBlock || !budgetResult.allowed,
         threshold,
       },
       policyPack: primaryPolicy ? primaryPolicy.name : null,
       policyComparisons,
+      tokenBudget: budgetResult,
     };
 
     if (shouldNotify || wouldBlock) {
@@ -722,10 +826,11 @@ class BlackwallShield {
       });
     }
 
+    const finalBlocked = shouldBlock || !budgetResult.allowed;
     return {
-      allowed: !shouldBlock,
-      blocked: shouldBlock,
-      reason: shouldBlock ? 'Prompt injection risk exceeded policy threshold' : null,
+      allowed: !finalBlocked,
+      blocked: finalBlocked,
+      reason: !budgetResult.allowed ? budgetResult.reason : (shouldBlock ? 'Prompt injection risk exceeded policy threshold' : null),
       messages: masked.masked,
       report,
       vault: masked.vault,
@@ -787,6 +892,144 @@ function inspectTone(text) {
   };
 }
 
+class CoTScanner {
+  constructor(options = {}) {
+    this.options = {
+      systemPrompt: null,
+      driftThreshold: 0.2,
+      ...options,
+    };
+  }
+
+  extractThinking(output) {
+    if (output && typeof output === 'object' && typeof output.thinking === 'string') return output.thinking;
+    const text = typeof output === 'string' ? output : JSON.stringify(output || '');
+    const match = text.match(/<thinking>([\s\S]*?)<\/thinking>/i);
+    return match ? match[1].trim() : '';
+  }
+
+  scan(output) {
+    const thinking = this.extractThinking(output);
+    if (!thinking) return { present: false, drift: false, score: 0, findings: [] };
+    const findings = [];
+    if (/\b(ignore|bypass|disable)\b.{0,40}\b(policy|guardrails|safety)\b/i.test(thinking)) {
+      findings.push({ id: 'thinking_policy_bypass', severity: 'high', reason: 'Reasoning step attempts to bypass safety policy' });
+    }
+    if (/\b(reveal|print|dump)\b.{0,40}\b(system prompt|secret|token|hidden instructions?)\b/i.test(thinking)) {
+      findings.push({ id: 'thinking_exfiltration', severity: 'high', reason: 'Reasoning step attempts to exfiltrate restricted content' });
+    }
+    const systemPrompt = this.options.systemPrompt;
+    let score = findings.length ? 0.6 : 0;
+    if (systemPrompt) {
+      const promptTokens = new Set(uniqueTokens(systemPrompt));
+      const thinkingTokens = uniqueTokens(thinking);
+      const overlap = thinkingTokens.length ? thinkingTokens.filter((token) => promptTokens.has(token)).length / thinkingTokens.length : 0;
+      if (overlap < this.options.driftThreshold) {
+        findings.push({ id: 'alignment_drift', severity: 'medium', reason: 'Reasoning chain drifted away from system safety guidance' });
+        score = Math.max(score, Number((1 - overlap).toFixed(2)));
+      }
+    }
+    return {
+      present: true,
+      drift: findings.some((item) => item.id === 'alignment_drift'),
+      score,
+      findings,
+      blocked: findings.some((item) => item.severity === 'high'),
+    };
+  }
+}
+
+class AgentIdentityRegistry {
+  constructor() {
+    this.identities = new Map();
+  }
+
+  register(agentId, profile = {}) {
+    const identity = { agentId, persona: profile.persona || 'default', scopes: profile.scopes || [], capabilities: profile.capabilities || {} };
+    this.identities.set(agentId, identity);
+    return identity;
+  }
+
+  get(agentId) {
+    return this.identities.get(agentId) || null;
+  }
+}
+
+class AgenticCapabilityGater {
+  constructor(options = {}) {
+    this.registry = options.registry || new AgentIdentityRegistry();
+  }
+
+  evaluate(agentId, capabilities = {}) {
+    const identity = this.registry.get(agentId) || this.registry.register(agentId, { capabilities });
+    identity.capabilities = { ...identity.capabilities, ...capabilities };
+    const active = ['confidentialData', 'externalCommunication', 'untrustedContent'].filter((key) => identity.capabilities[key]);
+    const allowed = active.length <= 2;
+    return {
+      allowed,
+      agentId,
+      activeCapabilities: active,
+      reason: allowed ? null : 'Rule of Two violation: agent has too many high-risk capabilities',
+    };
+  }
+}
+
+class MCPSecurityProxy {
+  constructor(options = {}) {
+    this.allowedScopes = options.allowedScopes || [];
+    this.requireApprovalFor = options.requireApprovalFor || ['tool.call', 'resource.write'];
+  }
+
+  inspect(message = {}) {
+    const method = message.method || '';
+    const scopes = message.userScopes || message.scopes || [];
+    const requested = message.requiredScopes || [];
+    const missingScopes = requested.filter((scope) => !scopes.includes(scope) && !this.allowedScopes.includes(scope));
+    const requiresApproval = this.requireApprovalFor.includes(method) || !!message.highImpact;
+    const allowed = missingScopes.length === 0 && !requiresApproval;
+    return {
+      allowed,
+      method,
+      missingScopes,
+      requiresApproval,
+      rotatedSessionId: message.sessionId ? `mcp_${crypto.createHash('sha256').update(String(message.sessionId)).digest('hex').slice(0, 12)}` : null,
+      reason: missingScopes.length ? 'MCP scope mismatch detected' : (requiresApproval ? 'MCP action requires just-in-time approval' : null),
+    };
+  }
+}
+
+class ImageMetadataScanner {
+  inspect(image = {}) {
+    const fields = [
+      image.altText,
+      image.caption,
+      image.metadata && image.metadata.comment,
+      image.metadata && image.metadata.instructions,
+      image.metadata && image.metadata.description,
+    ].filter(Boolean).join('\n');
+    const injection = detectPromptInjection(fields);
+    return {
+      allowed: !injection.blockedByDefault,
+      findings: injection.matches,
+      metadataText: fields,
+      reason: injection.blockedByDefault ? 'Image metadata contains instruction-like content' : null,
+    };
+  }
+}
+
+class VisualInstructionDetector {
+  inspect(image = {}) {
+    const text = [image.ocrText, image.embeddedText, image.caption].filter(Boolean).join('\n');
+    const injection = detectPromptInjection(text);
+    return {
+      allowed: !injection.blockedByDefault,
+      findings: injection.matches,
+      extractedText: text,
+      reason: injection.blockedByDefault ? 'Visual text contains adversarial or instruction-like content' : null,
+    };
+  }
+}
+
 class OutputFirewall {
   constructor(options = {}) {
     this.options = {
@@ -795,6 +1038,7 @@ class OutputFirewall {
       retrievalDocuments: [],
       groundingOverlapThreshold: 0.18,
       enforceProfessionalTone: false,
+      cotScanner: null,
       ...options,
     };
   }
@@ -811,6 +1055,7 @@ class OutputFirewall {
       groundingOverlapThreshold: this.options.groundingOverlapThreshold,
     });
     const tone = inspectTone(text);
+    const cot = (this.options.cotScanner || new CoTScanner({ systemPrompt: options.systemPrompt || this.options.systemPrompt })).scan(output);
 
     let highestSeverity = findings.some((f) => f.severity === 'critical')
       ? 'critical'
@@ -819,11 +1064,13 @@ class OutputFirewall {
         : findings.length ? 'medium' : 'low';
     if (severityWeight(grounding.severity) > severityWeight(highestSeverity)) highestSeverity = grounding.severity;
     if (this.options.enforceProfessionalTone && severityWeight(tone.severity) > severityWeight(highestSeverity)) highestSeverity = tone.severity;
+    if (cot.blocked && severityWeight('high') > severityWeight(highestSeverity)) highestSeverity = 'high';
 
     const allowed = !compareRisk(highestSeverity, this.options.riskThreshold)
       && schemaValid
       && !grounding.blocked
-      && (!this.options.enforceProfessionalTone || !tone.blocked);
+      && (!this.options.enforceProfessionalTone || !tone.blocked)
+      && !cot.blocked;
 
     return {
       allowed,
@@ -834,6 +1081,7 @@ class OutputFirewall {
       piiFindings: masked.findings,
       grounding,
       tone,
+      cot,
     };
   }
 }
@@ -845,6 +1093,7 @@ class ToolPermissionFirewall {
       blockedTools: [],
       validators: {},
       requireHumanApprovalFor: [],
+      capabilityGater: null,
       ...options,
     };
   }
@@ -866,12 +1115,35 @@ class ToolPermissionFirewall {
         return { allowed: false, reason: typeof result === 'string' ? result : `Arguments rejected for ${tool}`, requiresApproval: false };
       }
     }
+    if (this.options.capabilityGater && context && context.agentId) {
+      const gate = this.options.capabilityGater.evaluate(context.agentId, context.capabilities || {});
+      if (!gate.allowed) {
+        return { allowed: false, reason: gate.reason, requiresApproval: false, agentGate: gate };
+      }
+    }
     const requiresApproval = this.options.requireHumanApprovalFor.includes(tool);
     return { allowed: !requiresApproval, reason: requiresApproval ? `Tool ${tool} requires human approval` : null, requiresApproval };
   }
 }
 
 class RetrievalSanitizer {
+  constructor(options = {}) {
+    this.options = {
+      systemPrompt: null,
+      similarityThreshold: 0.5,
+      ...options,
+    };
+  }
+
+  similarityToSystemPrompt(text, systemPrompt = this.options.systemPrompt) {
+    if (!systemPrompt) return { similar: false, score: 0 };
+    const promptTokens = new Set(uniqueTokens(systemPrompt));
+    const textTokens = uniqueTokens(text);
+    if (!promptTokens.size || !textTokens.length) return { similar: false, score: 0 };
+    const overlap = textTokens.filter((token) => promptTokens.has(token)).length / Math.max(1, textTokens.length);
+    return { similar: overlap >= this.options.similarityThreshold, score: Number(overlap.toFixed(2)) };
+  }
+
   detectPoisoning(documents = []) {
     return (Array.isArray(documents) ? documents : []).map((doc, index) => {
       const text = sanitizeText(String(doc && doc.content ? doc.content : ''));
@@ -892,13 +1164,16 @@ class RetrievalSanitizer {
     const poisoning = this.detectPoisoning(documents);
     return (Array.isArray(documents) ? documents : []).map((doc, index) => {
       const text = sanitizeText(String(doc && doc.content ? doc.content : ''));
+      const similarity = this.similarityToSystemPrompt(text);
       const strippedInstructions = RETRIEVAL_INJECTION_RULES.reduce((acc, rule) => acc.replace(cloneRegex(rule), '[REDACTED_RETRIEVAL_INSTRUCTION]'), text);
-      const shielded = maskValue(strippedInstructions);
+      const similarityRedacted = similarity.similar ? '[REDACTED_SYSTEM_PROMPT_SIMILARITY]' : strippedInstructions;
+      const shielded = maskValue(similarityRedacted);
       const flagged = RETRIEVAL_INJECTION_RULES.some((rule) => cloneRegex(rule).test(text));
       return {
         id: doc && doc.id ? doc.id : `doc_${index + 1}`,
         originalRisky: flagged,
         poisoningRisk: poisoning[index],
+        systemPromptSimilarity: similarity,
         content: shielded.masked,
         findings: shielded.findings,
         metadata: doc && doc.metadata ? doc.metadata : {},
@@ -920,6 +1195,10 @@ class AuditTrail {
   record(event = {}) {
     const payload = {
       ...event,
+      complianceMap: event.complianceMap || mapCompliance([
+        ...(event.ruleIds || []),
+        event.type === 'retrieval_poisoning_detected' ? 'retrieval_poisoning' : null,
+      ].filter(Boolean)),
       timestamp: new Date().toISOString(),
     };
     const serialized = JSON.stringify(payload);
@@ -953,6 +1232,15 @@ function detectCanaryLeakage(text, tokens = []) {
     tokens: leaks,
     severity: leaks.length ? 'critical' : 'low',
   };
+}
+
+function rehydrateResponse(maskedText, vault = {}) {
+  let text = String(maskedText || '');
+  const keys = Object.keys(vault).sort((a, b) => b.length - a.length);
+  keys.forEach((token) => {
+    text = text.split(token).join(vault[token]);
+  });
+  return text;
 }
 
 function summarizeSecurityEvents(events = []) {
@@ -1077,12 +1365,20 @@ function createLlamaIndexCallback({ shield, metadata = {} } = {}) {
 }
 
 module.exports = {
+  AgenticCapabilityGater,
+  AgentIdentityRegistry,
   AuditTrail,
   BlackwallShield,
+  CoTScanner,
+  ImageMetadataScanner,
   LightweightIntentScorer,
+  MCPSecurityProxy,
   OutputFirewall,
   RetrievalSanitizer,
+  SessionBuffer,
+  TokenBudgetFirewall,
   ToolPermissionFirewall,
+  VisualInstructionDetector,
   SENSITIVE_PATTERNS,
   PROMPT_INJECTION_RULES,
   POLICY_PACKS,
@@ -1098,6 +1394,7 @@ module.exports = {
   createCanaryToken,
   injectCanaryTokens,
   detectCanaryLeakage,
+  rehydrateResponse,
   summarizeSecurityEvents,
   buildAdminDashboardModel,
   getRedTeamPromptLibrary,
