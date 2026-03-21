@@ -12,10 +12,11 @@ JavaScript security middleware for LLM applications in Node.js and Next.js. Blac
 - Supports shadow mode and side-by-side policy-pack evaluation
 - Notifies webhooks or alert handlers when risky traffic appears
 - Inspects model outputs for leaks, unsafe code, grounding drift, and tone violations
+- Ships Express, LangChain, and LlamaIndex integration helpers
 - Enforces allowlists, denylists, validators, and approval-gated tools
 - Sanitizes RAG documents before they are injected into context
 - Generates signed audit events and dashboard-friendly summaries
-- Supports canary token workflows, synthetic PII replacement, built-in red-team evaluation, and framework helpers
+- Supports canary token workflows, synthetic PII replacement, built-in red-team evaluation, framework helpers, and a bundled jailbreak corpus
 
 ## Install
 
@@ -77,7 +78,7 @@ Use `shadowMode` with `shadowPolicyPacks` or `comparePolicyPacks` to record what
 
 ### Lightweight integrations
 
-Use `createExpressMiddleware()` or `createLangChainCallbacks()` to drop Blackwall into existing app and orchestration flows faster.
+Use `createExpressMiddleware()`, `createLangChainCallbacks()`, or `createLlamaIndexCallback()` to drop Blackwall into existing app and orchestration flows faster.
 
 ## Core Building Blocks
 
