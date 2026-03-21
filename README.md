@@ -22,6 +22,7 @@ JavaScript security middleware for LLM applications in Node.js and Next.js. Blac
 
 ```bash
 npm install blackwall-llm-shield-js
+npm install @xenova/transformers
 ```
 
 ## Fast Start
@@ -79,6 +80,10 @@ Use `shadowMode` with `shadowPolicyPacks` or `comparePolicyPacks` to record what
 ### Lightweight integrations
 
 Use `createExpressMiddleware()`, `createLangChainCallbacks()`, or `createLlamaIndexCallback()` to drop Blackwall into existing app and orchestration flows faster.
+
+### Subpath modules
+
+Use `require('blackwall-llm-shield-js/integrations')` for callback wrappers and `require('blackwall-llm-shield-js/semantic')` for optional local semantic scoring adapters.
 
 ## Core Building Blocks
 

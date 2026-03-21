@@ -86,6 +86,18 @@ const POLICY_PACKS = {
     promptInjectionThreshold: 'medium',
     blockedDataTypes: ['passport', 'license', 'dob'],
   },
+  education: {
+    blockedTools: ['exam_answer_generator', 'student_record_export'],
+    outputRiskThreshold: 'medium',
+    promptInjectionThreshold: 'high',
+    blockedTopics: ['graded_homework_answers', 'exam_cheating'],
+  },
+  creativeWriting: {
+    blockedTools: ['full_book_export'],
+    outputRiskThreshold: 'high',
+    promptInjectionThreshold: 'high',
+    blockedTopics: ['copyrighted_style_replication', 'verbatim_lyrics'],
+  },
 };
 
 const RISK_ORDER = ['low', 'medium', 'high', 'critical'];
@@ -97,6 +109,10 @@ const TOXICITY_PATTERNS = [
   /\bkill yourself\b/i,
   /\bworthless\b/i,
   /\bdumb\b/i,
+];
+const LIGHTWEIGHT_ENTITY_PATTERNS = [
+  { type: 'person', regex: /\b([A-Z][a-z]{2,}\s+[A-Z][a-z]{2,})\b/g, synthetic: 'John Doe' },
+  { type: 'organization', regex: /\b([A-Z][A-Za-z]+(?:\s+(?:University|College|Hospital|Bank|Corp|Inc|Labs)))\b/g, synthetic: 'Northwind Labs' },
 ];
 const SARCASM_PATTERNS = [
   /\byeah[, ]+right\b/i,
@@ -359,6 +375,34 @@ function applyEntityDetectors(text, options = {}) {
   return { masked, findings, vault };
 }
 
+function applyLightweightContextualPII(text, options = {}) {
+  if (!options.detectNamedEntities) {
+    return { masked: text, findings: [], vault: {} };
+  }
+  let masked = text;
+  const findings = [];
+  const vault = {};
+  LIGHTWEIGHT_ENTITY_PATTERNS.forEach((pattern, patternIndex) => {
+    let counter = 0;
+    masked = masked.replace(cloneRegex(pattern.regex), (match) => {
+      if (Object.values(vault).includes(match)) return match;
+      counter += 1;
+      const token = options.syntheticReplacement
+        ? pattern.synthetic
+        : `[ENTITY_${pattern.type.toUpperCase()}_${patternIndex + 1}_${counter}]`;
+      vault[token] = match;
+      findings.push({
+        type: pattern.type,
+        masked: token,
+        detector: 'lightweight_contextual_pii',
+        original: options.includeOriginals ? match : undefined,
+      });
+      return token;
+    });
+  });
+  return { masked, findings, vault };
+}
+
 function maskText(text, options = {}) {
   const sanitized = sanitizeText(text, options.maxLength || 5000);
   const vault = {};
@@ -386,6 +430,11 @@ function maskText(text, options = {}) {
   findings.push(...entityDetection.findings);
   Object.assign(vault, entityDetection.vault);
 
+  const contextual = applyLightweightContextualPII(masked, options);
+  masked = contextual.masked;
+  findings.push(...contextual.findings);
+  Object.assign(vault, contextual.vault);
+
   return {
     original: sanitized,
     masked,
@@ -399,6 +448,10 @@ function generateSyntheticValue(type, original, index) {
   switch (type) {
     case 'email':
       return `user${index}@example.test`;
+    case 'person':
+      return 'John Doe';
+    case 'organization':
+      return 'Northwind Labs';
     case 'phone':
       return `+61 400 000 0${String(index).padStart(2, '0')}`;
     case 'creditCard':

@@ -7,7 +7,9 @@
   "type": "commonjs",
   "main": "src/index.js",
   "exports": {
-    ".": "./src/index.js"
+    ".": "./src/index.js",
+    "./integrations": "./src/integrations.js",
+    "./semantic": "./src/semantic.js"
   },
   "scripts": {
     "test": "node --test tests/*.test.js"
