@@ -6,14 +6,16 @@ JavaScript security middleware for LLM applications in Node.js and Next.js. Blac
 
 - Masks sensitive data before it reaches a model
 - Scores prompt-injection and secret-exfiltration attempts
+- De-obfuscates base64, hex, and leetspeak before scanning
 - Normalizes roles to reduce spoofed privileged context
 - Blocks requests when risk exceeds policy thresholds
+- Supports shadow mode and side-by-side policy-pack evaluation
 - Notifies webhooks or alert handlers when risky traffic appears
-- Inspects model outputs for leaks, unsafe code, and schema drift
+- Inspects model outputs for leaks, unsafe code, grounding drift, and tone violations
 - Enforces allowlists, denylists, validators, and approval-gated tools
 - Sanitizes RAG documents before they are injected into context
 - Generates signed audit events and dashboard-friendly summaries
-- Supports canary token workflows and built-in red-team evaluation
+- Supports canary token workflows, synthetic PII replacement, built-in red-team evaluation, and framework helpers
 
 ## Install
 
@@ -30,6 +32,8 @@ const shield = new BlackwallShield({
   blockOnPromptInjection: true,
   promptInjectionThreshold: 'high',
   notifyOnRiskLevel: 'medium',
+  shadowMode: true,
+  shadowPolicyPacks: ['healthcare', 'finance'],
 });
 
 const guarded = await shield.guardModelRequest({
@@ -56,6 +60,24 @@ console.log(guarded.allowed);
 console.log(guarded.messages);
 console.log(guarded.report);
 ```
+
+## New Capabilities
+
+### Context-aware jailbreak detection
+
+`detectPromptInjection()` now inspects decoded base64 and hex payloads, normalizes leetspeak, and adds semantic jailbreak signals on top of regex matches.
+
+### Shadow mode and A/B policy testing
+
+Use `shadowMode` with `shadowPolicyPacks` or `comparePolicyPacks` to record what would have been blocked without interrupting traffic.
+
+### Output grounding and tone review
+
+`OutputFirewall` can compare responses against retrieved documents and flag hallucination-style unsupported claims or unprofessional tone.
+
+### Lightweight integrations
+
+Use `createExpressMiddleware()` or `createLangChainCallbacks()` to drop Blackwall into existing app and orchestration flows faster.
 
 ## Core Building Blocks
 
@@ -134,5 +156,18 @@ console.log(tools.inspectCall({ tool: 'lookupCustomer', args: { id: 'cus_123' } 
 - OpenTelemetry spans and structured logs
 - More benchmark data for latency and false-positive rates
 - More adversarial scenarios in the red-team suite
+
+## Support
+
+If Blackwall LLM Shield is useful for your work, consider sponsoring the project or buying Vish a coffee.
+
+[![Buy Me a Coffee](https://img.shields.io/badge/Support-Buy%20Me%20a%20Coffee-FFDD00?style=for-the-badge&logo=buymeacoffee&logoColor=000000)](https://buymeacoffee.com/vishdevarae)
+
+Your support helps fund:
+
+- new framework integrations
+- stronger red-team coverage
+- benchmarks and production docs
+- continued maintenance for JavaScript and Python users
 
 Made with love by [Vish](https://vish.au).
