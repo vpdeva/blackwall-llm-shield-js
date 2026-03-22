@@ -32,6 +32,16 @@ export interface ReviewResult {
   [key: string]: unknown;
 }
 
+export interface JsonProtectionResult extends Record<string, unknown> {
+  allowed: boolean;
+  blocked: boolean;
+  json?: {
+    parsed: unknown;
+    schemaValid: boolean;
+    parseError?: string;
+  };
+}
+
 export interface ProviderAdapter {
   provider: string;
   invoke(payload: { messages: ShieldMessage[]; metadata?: Record<string, unknown>; guard?: GuardResult }): Promise<unknown> | unknown;
@@ -54,6 +64,7 @@ export class BlackwallShield {
   guardModelRequest(input?: { messages?: ShieldMessage[]; metadata?: Record<string, unknown>; allowSystemMessages?: boolean; comparePolicyPacks?: string[] }): Promise<GuardResult>;
   reviewModelResponse(input?: { output: unknown; metadata?: Record<string, unknown>; outputFirewall?: OutputFirewall | null; firewallOptions?: Record<string, unknown> }): Promise<ReviewResult>;
   protectModelCall(input: Record<string, unknown>): Promise<Record<string, unknown>>;
+  protectJsonModelCall(input: Record<string, unknown>): Promise<JsonProtectionResult>;
   protectWithAdapter(input: { adapter: ProviderAdapter; messages?: ShieldMessage[]; metadata?: Record<string, unknown>; allowSystemMessages?: boolean; comparePolicyPacks?: string[]; outputFirewall?: OutputFirewall | null; firewallOptions?: Record<string, unknown> }): Promise<Record<string, unknown>>;
 }
 
@@ -85,6 +96,7 @@ export const POLICY_PACKS: Record<string, Record<string, unknown>>;
 
 export function buildShieldOptions(options?: Record<string, unknown>): Record<string, unknown>;
 export function summarizeOperationalTelemetry(events?: Array<Record<string, unknown>>): Record<string, unknown>;
+export function parseJsonOutput(output: unknown): unknown;
 
 export function createOpenAIAdapter(input: Record<string, unknown>): ProviderAdapter;
 export function createAnthropicAdapter(input: Record<string, unknown>): ProviderAdapter;

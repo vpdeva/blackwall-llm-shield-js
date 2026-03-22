@@ -145,6 +145,34 @@ const SHIELD_PRESETS = {
     notifyOnRiskLevel: 'medium',
     shadowMode: false,
   },
+  agentPlanner: {
+    blockOnPromptInjection: true,
+    promptInjectionThreshold: 'medium',
+    notifyOnRiskLevel: 'medium',
+    shadowMode: true,
+    shadowPolicyPacks: ['government'],
+  },
+  documentReview: {
+    blockOnPromptInjection: true,
+    promptInjectionThreshold: 'high',
+    notifyOnRiskLevel: 'medium',
+    shadowMode: true,
+    policyPack: 'healthcare',
+  },
+  ragSearch: {
+    blockOnPromptInjection: true,
+    promptInjectionThreshold: 'medium',
+    notifyOnRiskLevel: 'medium',
+    shadowMode: true,
+    shadowPolicyPacks: ['government'],
+  },
+  toolCalling: {
+    blockOnPromptInjection: true,
+    promptInjectionThreshold: 'medium',
+    notifyOnRiskLevel: 'medium',
+    shadowMode: false,
+    policyPack: 'finance',
+  },
 };
 
 const CORE_INTERFACE_VERSION = '1.0';
@@ -152,6 +180,7 @@ const CORE_INTERFACES = Object.freeze({
   guardModelRequest: CORE_INTERFACE_VERSION,
   reviewModelResponse: CORE_INTERFACE_VERSION,
   protectModelCall: CORE_INTERFACE_VERSION,
+  protectJsonModelCall: CORE_INTERFACE_VERSION,
   toolPermissionFirewall: CORE_INTERFACE_VERSION,
   retrievalSanitizer: CORE_INTERFACE_VERSION,
 });
@@ -350,6 +379,7 @@ function summarizeOperationalTelemetry(events = []) {
     shadowModeEvents: 0,
     byType: {},
     byRoute: {},
+    byFeature: {},
     byTenant: {},
     byModel: {},
     byPolicyOutcome: {
@@ -359,11 +389,14 @@ function summarizeOperationalTelemetry(events = []) {
     },
     topRules: {},
     highestSeverity: 'low',
+    noisiestRoutes: [],
+    weeklyBlockEstimate: 0,
   };
   for (const event of Array.isArray(events) ? events : []) {
     const type = event && event.type ? event.type : 'unknown';
     const metadata = event && event.metadata ? event.metadata : {};
     const route = metadata.route || metadata.path || 'unknown';
+    const feature = metadata.feature || metadata.capability || route;
     const tenant = metadata.tenantId || metadata.tenant_id || 'unknown';
     const model = metadata.model || metadata.modelName || 'unknown';
     const severity = event && event.report && event.report.outputReview
@@ -372,6 +405,7 @@ function summarizeOperationalTelemetry(events = []) {
     summary.totalEvents += 1;
     summary.byType[type] = (summary.byType[type] || 0) + 1;
     summary.byRoute[route] = (summary.byRoute[route] || 0) + 1;
+    summary.byFeature[feature] = (summary.byFeature[feature] || 0) + 1;
     summary.byTenant[tenant] = (summary.byTenant[tenant] || 0) + 1;
     summary.byModel[model] = (summary.byModel[model] || 0) + 1;
     if (event && event.blocked) summary.blockedEvents += 1;
@@ -390,7 +424,17 @@ function summarizeOperationalTelemetry(events = []) {
   summary.topRules = Object.fromEntries(
     Object.entries(summary.topRules).sort((a, b) => b[1] - a[1]).slice(0, 10)
   );
+  summary.noisiestRoutes = Object.entries(summary.byRoute)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([route, count]) => ({ route, count }));
+  summary.weeklyBlockEstimate = summary.byPolicyOutcome.blocked + summary.byPolicyOutcome.shadowBlocked;
   return summary;
+}
+
+function parseJsonOutput(output) {
+  if (typeof output === 'string') return JSON.parse(output);
+  return output;
 }
 
 function resolveShieldPreset(name) {
@@ -1352,6 +1396,69 @@ class BlackwallShield {
       },
     });
   }
+
+  async protectJsonModelCall({
+    messages = [],
+    metadata = {},
+    allowSystemMessages = this.options.allowSystemMessages,
+    comparePolicyPacks = [],
+    callModel,
+    mapMessages = null,
+    mapOutput = null,
+    outputFirewall = null,
+    firewallOptions = {},
+    requiredSchema = null,
+  } = {}) {
+    const result = await this.protectModelCall({
+      messages,
+      metadata,
+      allowSystemMessages,
+      comparePolicyPacks,
+      callModel,
+      mapMessages,
+      mapOutput,
+      outputFirewall,
+      firewallOptions,
+    });
+    if (result.blocked) return result;
+    try {
+      const parsed = parseJsonOutput(result.review.maskedOutput != null ? result.review.maskedOutput : result.response);
+      const schemaValid = validateRequiredSchema(parsed, requiredSchema);
+      if (!schemaValid) {
+        return {
+          ...result,
+          allowed: false,
+          blocked: true,
+          stage: 'output',
+          reason: 'Model output failed JSON schema validation',
+          json: {
+            parsed,
+            schemaValid: false,
+          },
+        };
+      }
+      return {
+        ...result,
+        json: {
+          parsed,
+          schemaValid: true,
+        },
+      };
+    } catch (error) {
+      return {
+        ...result,
+        allowed: false,
+        blocked: true,
+        stage: 'output',
+        reason: 'Model output is not valid JSON',
+        json: {
+          parsed: null,
+          schemaValid: false,
+          parseError: error.message,
+        },
+      };
+    }
+  }
 }
 
 function validateGrounding(text, documents = [], options = {}) {
@@ -2060,6 +2167,7 @@ module.exports = {
   runRedTeamSuite,
   buildShieldOptions,
   summarizeOperationalTelemetry,
+  parseJsonOutput,
   createOpenAIAdapter,
   createAnthropicAdapter,
   createGeminiAdapter,

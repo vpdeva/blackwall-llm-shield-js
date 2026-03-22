@@ -105,7 +105,7 @@ Use `require('@vpdeva/blackwall-llm-shield-js/providers')` for provider adapter 
 
 Use it to sanitize inbound messages, mask sensitive data, score prompt-injection risk, and decide whether the request should continue to the model provider.
 
-It also exposes `protectModelCall()`, `protectWithAdapter()`, and `reviewModelResponse()` so you can enforce request checks before provider calls and review outputs before they go back to the user.
+It also exposes `protectModelCall()`, `protectJsonModelCall()`, `protectWithAdapter()`, and `reviewModelResponse()` so you can enforce request checks before provider calls and review outputs before they go back to the user.
 
 ### `OutputFirewall`
 
@@ -129,6 +129,10 @@ Recommended presets:
 - `strict` for high-sensitivity routes
 - `ragSafe` for retrieval-heavy flows
 - `agentTools` for tool-calling and approval-gated agent actions
+- `agentPlanner` for JSON-heavy planner and internal ops routes
+- `documentReview` for classification and document-review pipelines
+- `ragSearch` for search-heavy retrieval endpoints
+- `toolCalling` for routes that broker external actions
 
 ### `AuditTrail`
 
@@ -175,6 +179,19 @@ const result = await shield.protectWithAdapter({
 });
 
 console.log(result.stage, result.allowed);
+```
+
+### Protect a strict JSON workflow
+
+```js
+const result = await shield.protectJsonModelCall({
+  messages: [{ role: 'user', content: 'Return the shipment triage plan as JSON.' }],
+  metadata: { route: '/api/planner', feature: 'planner' },
+  requiredSchema: { steps: 'object' },
+  callModel: async () => JSON.stringify({ steps: ['triage', 'notify-ops'] }),
+});
+
+console.log(result.json.parsed);
 ```
 
 ### Use presets and route-level policy overrides
@@ -231,12 +248,40 @@ const toolFirewall = new ToolPermissionFirewall({
 });
 ```
 
+For document review and verification:
+
+```js
+const shield = new BlackwallShield({
+  preset: 'documentReview',
+  routePolicies: [
+    {
+      route: '/api/verify',
+      options: {
+        shadowMode: true,
+        outputFirewallDefaults: { requiredSchema: { verdict: 'string' } },
+      },
+    },
+  ],
+});
+```
+
+### Choose your integration path
+
+- Request-only guard: `guardModelRequest()`
+- Request + output review: `protectModelCall()`
+- Strict JSON planner/document workflows: `protectJsonModelCall()`
+- Full provider wrapper: `protectWithAdapter()`
+- Tool firewall + RAG sanitizer: `ToolPermissionFirewall` + `RetrievalSanitizer`
+
 ### Operational telemetry summaries
 
 ```js
 const { summarizeOperationalTelemetry } = require('@vpdeva/blackwall-llm-shield-js');
 const summary = summarizeOperationalTelemetry(events);
 console.log(summary.byRoute);
+console.log(summary.byFeature);
+console.log(summary.noisiestRoutes);
+console.log(summary.weeklyBlockEstimate);
 console.log(summary.highestSeverity);
 ```
 
@@ -280,6 +325,8 @@ console.log(tools.inspectCall({ tool: 'lookupCustomer', args: { id: 'cus_123' } 
 - [`examples/admin-dashboard/index.html`](/Users/vishnu/Documents/blackwall-llm-shield/blackwall-llm-shield-js/examples/admin-dashboard/index.html) shows a polished security command center demo
 
 For Next.js, the most production-real patterns are App Router route handlers, server actions for trusted internal mutations, and streaming endpoints that apply output review to assembled or final chunks instead of raw intermediate tokens.
+
+For Gemini-heavy apps, the bundled adapter now preserves system instructions plus mixed text/image/file parts so App Router handlers can wrap direct `@google/generative-ai` calls with less translation glue.
 
 ## Release Commands
 

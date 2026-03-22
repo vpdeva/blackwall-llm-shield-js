@@ -12,6 +12,38 @@ function stringifyContent(content) {
   return String(content || '');
 }
 
+function toGeminiPart(item) {
+  if (typeof item === 'string') return { text: item };
+  if (!item || typeof item !== 'object') return null;
+  if ((item.type === 'text' || item.type === 'input_text') && typeof item.text === 'string') {
+    return { text: item.text };
+  }
+  if (item.type === 'image_url' && typeof item.image_url === 'string') {
+    return { fileData: { fileUri: item.image_url } };
+  }
+  if (item.type === 'file') {
+    if (item.file_data && typeof item.file_data === 'object') return { inlineData: item.file_data };
+    if (typeof item.file_uri === 'string') return { fileData: { fileUri: item.file_uri } };
+    if (typeof item.file_id === 'string') return { fileData: { fileUri: item.file_id } };
+  }
+  if (item.type === 'json' && typeof item.value === 'string') {
+    return { text: item.value };
+  }
+  if (typeof item.text === 'string') return { text: item.text };
+  return null;
+}
+
+function toGeminiParts(content) {
+  if (typeof content === 'string') return [{ text: content }];
+  if (Array.isArray(content)) return content.map((item) => toGeminiPart(item)).filter(Boolean);
+  if (content && typeof content === 'object') {
+    if (Array.isArray(content.parts)) return toGeminiParts(content.parts);
+    const part = toGeminiPart(content);
+    return part ? [part] : [{ text: stringifyContent(content) }];
+  }
+  return [{ text: String(content || '') }];
+}
+
 function toOpenAIInput(messages = []) {
   return messages.map((message) => ({
     role: message.role,
@@ -101,19 +133,30 @@ function createGeminiAdapter({ client, model, request = {}, extractOutput = null
   return {
     provider: 'gemini',
     async invoke({ messages }) {
+      const systemInstruction = extractSystemPrompt(messages);
       const response = await client.models.generateContent({
         model,
-        contents: messages.map((message) => ({
-          role: message.role === 'assistant' ? 'model' : 'user',
-          parts: [{ text: stringifyContent(message.content) }],
-        })),
+        contents: messages
+          .filter((message) => message.role !== 'system')
+          .map((message) => ({
+            role: message.role === 'assistant' ? 'model' : 'user',
+            parts: toGeminiParts(message.content),
+          })),
+        ...(systemInstruction ? { systemInstruction: { parts: [{ text: systemInstruction }] } } : {}),
         ...request,
       });
-      return defaultAdapterResult(response, response && typeof response.text === 'string' ? response.text : '');
+      return defaultAdapterResult(response, this.extractOutput(response));
     },
     extractOutput(response) {
       if (typeof extractOutput === 'function') return extractOutput(response);
       if (response && typeof response.text === 'string') return response.text;
+      if (response && Array.isArray(response.candidates)) {
+        return response.candidates
+          .flatMap((candidate) => (((candidate || {}).content || {}).parts || []))
+          .map((part) => (part && typeof part.text === 'string' ? part.text : ''))
+          .filter(Boolean)
+          .join('\n');
+      }
       if (typeof response === 'string') return response;
       return '';
     },

@@ -27,6 +27,8 @@ const {
   buildShieldOptions,
   createOpenAIAdapter,
   createAnthropicAdapter,
+  createGeminiAdapter,
+  parseJsonOutput,
   summarizeOperationalTelemetry,
   AuditTrail,
   POLICY_PACKS,
@@ -91,6 +93,10 @@ test('policy packs are exposed', () => {
   assert.ok(SHIELD_PRESETS.shadowFirst);
   assert.ok(SHIELD_PRESETS.ragSafe);
   assert.ok(SHIELD_PRESETS.agentTools);
+  assert.ok(SHIELD_PRESETS.agentPlanner);
+  assert.ok(SHIELD_PRESETS.documentReview);
+  assert.ok(SHIELD_PRESETS.ragSearch);
+  assert.ok(SHIELD_PRESETS.toolCalling);
 });
 
 test('deobfuscates base64 jailbreak attempts', () => {
@@ -221,6 +227,21 @@ test('protectModelCall reviews model output and emits telemetry', async () => {
   assert.equal(telemetry[0].type, 'llm_request_reviewed');
   assert.equal(telemetry[1].type, 'llm_output_reviewed');
   assert.equal(result.review.report.outputReview.telemetry.eventType, 'llm_output_reviewed');
+});
+
+test('protectJsonModelCall validates structured JSON workflows end to end', async () => {
+  const shield = new BlackwallShield({ preset: 'agentPlanner' });
+
+  const result = await shield.protectJsonModelCall({
+    messages: [{ role: 'user', content: 'Plan the next shipping actions as strict JSON.' }],
+    metadata: { route: '/api/planner', feature: 'planner' },
+    requiredSchema: { steps: 'object' },
+    callModel: async () => JSON.stringify({ steps: ['triage', 'notify'] }),
+  });
+
+  assert.equal(result.allowed, true);
+  assert.deepEqual(result.json.parsed, { steps: ['triage', 'notify'] });
+  assert.equal(result.json.schemaValid, true);
 });
 
 test('buildShieldOptions applies presets with override hooks', () => {
@@ -463,20 +484,58 @@ test('anthropic adapter preserves system prompts and extracts text output', asyn
   assert.equal(result.allowed, true);
 });
 
+test('gemini adapter preserves multimodal parts and system instructions', async () => {
+  let payload = null;
+  const client = {
+    models: {
+      generateContent: async (input) => {
+        payload = input;
+        return { candidates: [{ content: { parts: [{ text: '{"answer":"ok"}' }] } }] };
+      },
+    },
+  };
+  const adapter = createGeminiAdapter({ client, model: 'gemini-2.5-flash' });
+
+  const response = await adapter.invoke({
+    messages: [
+      { role: 'system', trusted: true, content: 'Return JSON only.' },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'Review this parcel image.' },
+          { type: 'image_url', image_url: 'https://example.com/parcel.png' },
+        ],
+      },
+    ],
+  });
+
+  assert.equal(payload.systemInstruction.parts[0].text, 'Return JSON only.');
+  assert.equal(payload.contents[0].parts[1].fileData.fileUri, 'https://example.com/parcel.png');
+  assert.equal(adapter.extractOutput(response.response), '{"answer":"ok"}');
+});
+
 test('operational telemetry summarizer groups events by route and severity', () => {
   const summary = summarizeOperationalTelemetry([
-    { type: 'llm_request_reviewed', metadata: { route: '/api/chat', tenantId: 't1', model: 'gpt-4.1-mini' }, blocked: false, shadowMode: true, report: { promptInjection: { level: 'medium', matches: [{ id: 'ignore_instructions' }] } } },
+    { type: 'llm_request_reviewed', metadata: { route: '/api/chat', feature: 'planner', tenantId: 't1', model: 'gpt-4.1-mini' }, blocked: false, shadowMode: true, report: { promptInjection: { level: 'medium', matches: [{ id: 'ignore_instructions' }] } } },
     { type: 'llm_output_reviewed', metadata: { route: '/api/chat', tenantId: 't1', model: 'gpt-4.1-mini' }, blocked: true, report: { outputReview: { severity: 'high' } } },
   ]);
 
   assert.equal(summary.totalEvents, 2);
   assert.equal(summary.byRoute['/api/chat'], 2);
+  assert.equal(summary.byFeature.planner, 1);
   assert.equal(summary.byTenant.t1, 2);
   assert.equal(summary.byModel['gpt-4.1-mini'], 2);
   assert.equal(summary.blockedEvents, 1);
   assert.equal(summary.byPolicyOutcome.shadowBlocked, 1);
+  assert.equal(summary.weeklyBlockEstimate, 2);
+  assert.equal(summary.noisiestRoutes[0].route, '/api/chat');
   assert.equal(summary.topRules.ignore_instructions, 1);
   assert.equal(summary.highestSeverity, 'high');
+});
+
+test('parseJsonOutput parses string payloads and returns objects untouched', () => {
+  assert.deepEqual(parseJsonOutput('{"ok":true}'), { ok: true });
+  assert.deepEqual(parseJsonOutput({ ok: true }), { ok: true });
 });
 
 test('agent identity registry can issue and verify ephemeral tokens', () => {

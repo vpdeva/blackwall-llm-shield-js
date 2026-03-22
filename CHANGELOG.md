@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.7
+
+- Added workflow-specific presets for planner, document-review, RAG-search, and tool-calling routes
+- Added `protectJsonModelCall()` plus JSON parsing helpers for strict structured-output pipelines
+- Improved Gemini adapter handling for system instructions and multimodal message parts
+- Expanded operator telemetry summaries with feature grouping, noisiest routes, and weekly block estimates
+
 ## 0.1.6
 
 - Added production-ready telemetry summaries grouped by route, tenant, model, policy outcome, and top rules
