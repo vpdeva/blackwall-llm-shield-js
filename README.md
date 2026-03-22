@@ -185,6 +185,12 @@ console.log(tools.inspectCall({ tool: 'lookupCustomer', args: { id: 'cus_123' } 
 - [`examples/nextjs-app-router/app/api/chat/route.js`](/Users/vishnu/Documents/blackwall-llm-shield/blackwall-llm-shield-js/examples/nextjs-app-router/app/api/chat/route.js) shows guarded request handling in a Next.js route
 - [`examples/admin-dashboard/index.html`](/Users/vishnu/Documents/blackwall-llm-shield/blackwall-llm-shield-js/examples/admin-dashboard/index.html) shows a polished security command center demo
 
+## Release Commands
+
+- `npm run release:check` runs the JS test suite before release
+- `npm run release:pack` creates the local npm tarball
+- `npm run release:publish` publishes the package to npm
+
 ## Rollout Notes
 
 - Start with `shadowMode: true` and inspect `report.telemetry` plus `onTelemetry` events before enabling hard blocking.

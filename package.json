@@ -15,7 +15,10 @@
     "blackwall-scorecard": "src/scorecard.js"
   },
   "scripts": {
-    "test": "node --test tests/*.test.js"
+    "test": "node --test tests/*.test.js",
+    "release:check": "npm test",
+    "release:pack": "npm pack",
+    "release:publish": "npm publish --access public --provenance"
   },
   "files": [
     "src",
