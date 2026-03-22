@@ -9,6 +9,7 @@
   "exports": {
     ".": "./src/index.js",
     "./integrations": "./src/integrations.js",
+    "./providers": "./src/providers.js",
     "./semantic": "./src/semantic.js"
   },
   "bin": {
@@ -16,6 +17,9 @@
   },
   "scripts": {
     "test": "node --test tests/*.test.js",
+    "changeset": "changeset",
+    "version-packages": "changeset version",
+    "release": "changeset publish",
     "release:check": "npm test",
     "release:pack": "npm pack",
     "release:publish": "npm publish --access public --provenance"
@@ -49,5 +53,8 @@
     "enterprise",
     "nextjs",
     "node"
-  ]
+  ],
+  "devDependencies": {
+    "@changesets/cli": "^2.29.6"
+  }
 }

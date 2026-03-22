@@ -12,6 +12,7 @@ JavaScript security middleware for LLM applications in Node.js and Next.js. Blac
 - Supports shadow mode and side-by-side policy-pack evaluation
 - Notifies webhooks or alert handlers when risky traffic appears
 - Emits structured telemetry for prompt risk, masking volume, and output review outcomes
+- Includes first-class provider adapters for OpenAI, Anthropic, Gemini, and OpenRouter
 - Inspects model outputs for leaks, unsafe code, grounding drift, and tone violations
 - Ships Express, LangChain, and LlamaIndex integration helpers
 - Enforces allowlists, denylists, validators, and approval-gated tools
@@ -74,6 +75,10 @@ console.log(guarded.report);
 
 Use `shadowMode` with `shadowPolicyPacks` or `comparePolicyPacks` to record what would have been blocked without interrupting traffic.
 
+### Provider adapters and stable wrappers
+
+Use `createOpenAIAdapter()`, `createAnthropicAdapter()`, `createGeminiAdapter()`, or `createOpenRouterAdapter()` with `protectWithAdapter()` when you want Blackwall to wrap the provider call end to end.
+
 ### Output grounding and tone review
 
 `OutputFirewall` can compare responses against retrieved documents and flag hallucination-style unsupported claims or unprofessional tone.
@@ -86,13 +91,15 @@ Use `createExpressMiddleware()`, `createLangChainCallbacks()`, or `createLlamaIn
 
 Use `require('blackwall-llm-shield-js/integrations')` for callback wrappers and `require('blackwall-llm-shield-js/semantic')` for optional local semantic scoring adapters.
 
+Use `require('blackwall-llm-shield-js/providers')` for provider adapter factories.
+
 ## Core Building Blocks
 
 ### `BlackwallShield`
 
 Use it to sanitize inbound messages, mask sensitive data, score prompt-injection risk, and decide whether the request should continue to the model provider.
 
-It also exposes `protectModelCall()` and `reviewModelResponse()` so you can enforce request checks before OpenAI or Anthropic calls and review outputs before they go back to the user.
+It also exposes `protectModelCall()`, `protectWithAdapter()`, and `reviewModelResponse()` so you can enforce request checks before provider calls and review outputs before they go back to the user.
 
 ### `OutputFirewall`
 
@@ -127,19 +134,22 @@ if (!guarded.allowed) {
 ### Wrap a provider call end to end
 
 ```js
+const { BlackwallShield, createOpenAIAdapter } = require('blackwall-llm-shield-js');
+
 const shield = new BlackwallShield({
-  shadowMode: true,
+  preset: 'shadowFirst',
   onTelemetry: async (event) => console.log(JSON.stringify(event)),
 });
 
-const result = await shield.protectModelCall({
+const adapter = createOpenAIAdapter({
+  client: openai,
+  model: 'gpt-4.1-mini',
+});
+
+const result = await shield.protectWithAdapter({
+  adapter,
   messages: [{ role: 'user', content: 'Summarize this shipment exception.' }],
   metadata: { route: '/api/chat', tenantId: 'au-commerce', userId: 'ops-7' },
-  callModel: async ({ messages }) => openai.responses.create({
-    model: 'gpt-4.1-mini',
-    input: messages.map((msg) => `${msg.role}: ${msg.content}`).join('\n'),
-  }),
-  mapOutput: (response) => response.output_text,
   firewallOptions: {
     retrievalDocuments: [
       { id: 'kb-1', content: 'Shipment exceptions should include the parcel ID, lane, and next action.' },
@@ -148,6 +158,30 @@ const result = await shield.protectModelCall({
 });
 
 console.log(result.stage, result.allowed);
+```
+
+### Use presets and route-level policy overrides
+
+```js
+const shield = new BlackwallShield({
+  preset: 'shadowFirst',
+  routePolicies: [
+    {
+      route: '/api/admin/*',
+      options: {
+        preset: 'strict',
+        policyPack: 'finance',
+      },
+    },
+    {
+      route: '/api/health',
+      options: {
+        shadowMode: true,
+        suppressPromptRules: ['ignore_instructions'],
+      },
+    },
+  ],
+});
 ```
 
 ### Inspect model output
@@ -190,12 +224,15 @@ console.log(tools.inspectCall({ tool: 'lookupCustomer', args: { id: 'cus_123' } 
 - `npm run release:check` runs the JS test suite before release
 - `npm run release:pack` creates the local npm tarball
 - `npm run release:publish` publishes the package to npm
+- `npm run changeset` creates a version/changelog entry for the next release
+- `npm run version-packages` applies pending Changesets locally
 
 ## Rollout Notes
 
-- Start with `shadowMode: true` and inspect `report.telemetry` plus `onTelemetry` events before enabling hard blocking.
+- Start with `preset: 'shadowFirst'` or `shadowMode: true` and inspect `report.telemetry` plus `onTelemetry` events before enabling hard blocking.
 - Use `RetrievalSanitizer` and `ToolPermissionFirewall` in front of RAG, search, admin actions, and tool-calling flows.
 - Add regression prompts for instruction overrides, prompt leaks, token leaks, and Australian PII samples so upgrades stay safe.
+- Expect some latency increase from grounding checks, output review, and custom detectors; benchmark with your real prompt and response sizes before enforcing globally.
 
 ## Support
 

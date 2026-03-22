@@ -1,5 +1,11 @@
 const crypto = require('crypto');
 const RED_TEAM_PROMPT_LIBRARY = require('./red_team_prompts.json');
+const {
+  createOpenAIAdapter,
+  createAnthropicAdapter,
+  createGeminiAdapter,
+  createOpenRouterAdapter,
+} = require('./providers');
 
 const SENSITIVE_PATTERNS = {
   email: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g,
@@ -99,6 +105,44 @@ const POLICY_PACKS = {
     blockedTopics: ['copyrighted_style_replication', 'verbatim_lyrics'],
   },
 };
+
+const SHIELD_PRESETS = {
+  balanced: {
+    blockOnPromptInjection: true,
+    promptInjectionThreshold: 'high',
+    notifyOnRiskLevel: 'medium',
+    shadowMode: false,
+  },
+  shadowFirst: {
+    blockOnPromptInjection: true,
+    promptInjectionThreshold: 'medium',
+    notifyOnRiskLevel: 'medium',
+    shadowMode: true,
+  },
+  strict: {
+    blockOnPromptInjection: true,
+    promptInjectionThreshold: 'medium',
+    notifyOnRiskLevel: 'medium',
+    shadowMode: false,
+    allowSystemMessages: false,
+  },
+  developerFriendly: {
+    blockOnPromptInjection: true,
+    promptInjectionThreshold: 'high',
+    notifyOnRiskLevel: 'high',
+    shadowMode: true,
+    allowSystemMessages: true,
+  },
+};
+
+const CORE_INTERFACE_VERSION = '1.0';
+const CORE_INTERFACES = Object.freeze({
+  guardModelRequest: CORE_INTERFACE_VERSION,
+  reviewModelResponse: CORE_INTERFACE_VERSION,
+  protectModelCall: CORE_INTERFACE_VERSION,
+  toolPermissionFirewall: CORE_INTERFACE_VERSION,
+  retrievalSanitizer: CORE_INTERFACE_VERSION,
+});
 
 const RISK_ORDER = ['low', 'medium', 'high', 'critical'];
 const LEETSPEAK_MAP = { '0': 'o', '1': 'i', '3': 'e', '4': 'a', '5': 's', '7': 't', '@': 'a', '$': 's' };
@@ -220,6 +264,129 @@ function createTelemetryEvent(type, payload = {}) {
     type,
     createdAt: new Date().toISOString(),
     ...payload,
+  };
+}
+
+function resolveShieldPreset(name) {
+  if (!name) return {};
+  return SHIELD_PRESETS[name] ? { ...SHIELD_PRESETS[name] } : {};
+}
+
+function dedupeArray(values = []) {
+  return [...new Set((Array.isArray(values) ? values : []).filter(Boolean))];
+}
+
+function routePatternMatches(pattern, route = '', metadata = {}) {
+  if (!pattern) return false;
+  if (typeof pattern === 'function') return !!pattern(route, metadata);
+  if (pattern instanceof RegExp) return pattern.test(route);
+  if (typeof pattern === 'string') {
+    if (pattern === route) return true;
+    if (pattern.includes('*')) {
+      const regex = new RegExp(`^${pattern.split('*').map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`);
+      return regex.test(route);
+    }
+  }
+  return false;
+}
+
+function resolveRoutePolicy(routePolicies = [], metadata = {}) {
+  const route = metadata.route || metadata.path || '';
+  const matched = (Array.isArray(routePolicies) ? routePolicies : []).filter((entry) => routePatternMatches(entry && entry.route, route, metadata));
+  if (!matched.length) return null;
+  return matched.reduce((acc, entry) => {
+    const options = entry && entry.options ? entry.options : {};
+    return {
+      ...acc,
+      ...options,
+      shadowPolicyPacks: dedupeArray([...(acc.shadowPolicyPacks || []), ...(options.shadowPolicyPacks || [])]),
+      entityDetectors: [...(acc.entityDetectors || []), ...(options.entityDetectors || [])],
+      customPromptDetectors: [...(acc.customPromptDetectors || []), ...(options.customPromptDetectors || [])],
+      suppressPromptRules: dedupeArray([...(acc.suppressPromptRules || []), ...(options.suppressPromptRules || [])]),
+    };
+  }, {});
+}
+
+function applyPromptRuleSuppressions(injection, suppressedIds = []) {
+  const suppressionSet = new Set(dedupeArray(suppressedIds));
+  if (!suppressionSet.size) return injection;
+  const matches = (injection.matches || []).filter((item) => !suppressionSet.has(item.id));
+  const score = Math.min(matches.reduce((sum, item) => sum + (item.score || 0), 0), 100);
+  return {
+    ...injection,
+    matches,
+    score,
+    level: riskLevelFromScore(score),
+    blockedByDefault: score >= 45,
+  };
+}
+
+function applyCustomPromptDetectors(injection, text, options = {}, metadata = {}) {
+  const detectors = Array.isArray(options.customPromptDetectors) ? options.customPromptDetectors : [];
+  if (!detectors.length) return injection;
+  const matches = [...(injection.matches || [])];
+  const seen = new Set(matches.map((item) => item.id));
+  let score = injection.score || 0;
+  for (const detector of detectors) {
+    if (typeof detector !== 'function') continue;
+    const result = detector({ text, injection, metadata, options }) || [];
+    const findings = Array.isArray(result) ? result : [result];
+    for (const finding of findings) {
+      if (!finding || !finding.id || seen.has(finding.id)) continue;
+      seen.add(finding.id);
+      matches.push({
+        id: finding.id,
+        score: Math.max(0, Math.min(finding.score || 0, 40)),
+        reason: finding.reason || 'Custom prompt detector triggered',
+        source: finding.source || 'custom',
+      });
+      score += Math.max(0, Math.min(finding.score || 0, 40));
+    }
+  }
+  const cappedScore = Math.min(score, 100);
+  return {
+    ...injection,
+    matches,
+    score: cappedScore,
+    level: riskLevelFromScore(cappedScore),
+    blockedByDefault: cappedScore >= 45,
+  };
+}
+
+function resolveEffectiveShieldOptions(baseOptions = {}, metadata = {}) {
+  const presetOptions = resolveShieldPreset(baseOptions.preset);
+  const routePolicy = resolveRoutePolicy(baseOptions.routePolicies, metadata);
+  const routePresetOptions = resolveShieldPreset(routePolicy && routePolicy.preset);
+  return {
+    ...baseOptions,
+    ...presetOptions,
+    ...routePresetOptions,
+    ...(routePolicy || {}),
+    shadowPolicyPacks: dedupeArray([
+      ...((presetOptions && presetOptions.shadowPolicyPacks) || []),
+      ...((routePresetOptions && routePresetOptions.shadowPolicyPacks) || []),
+      ...(baseOptions.shadowPolicyPacks || []),
+      ...((routePolicy && routePolicy.shadowPolicyPacks) || []),
+    ]),
+    entityDetectors: [
+      ...((presetOptions && presetOptions.entityDetectors) || []),
+      ...((routePresetOptions && routePresetOptions.entityDetectors) || []),
+      ...(baseOptions.entityDetectors || []),
+      ...((routePolicy && routePolicy.entityDetectors) || []),
+    ],
+    customPromptDetectors: [
+      ...((presetOptions && presetOptions.customPromptDetectors) || []),
+      ...((routePresetOptions && routePresetOptions.customPromptDetectors) || []),
+      ...(baseOptions.customPromptDetectors || []),
+      ...((routePolicy && routePolicy.customPromptDetectors) || []),
+    ],
+    suppressPromptRules: dedupeArray([
+      ...((presetOptions && presetOptions.suppressPromptRules) || []),
+      ...((routePresetOptions && routePresetOptions.suppressPromptRules) || []),
+      ...(baseOptions.suppressPromptRules || []),
+      ...((routePolicy && routePolicy.suppressPromptRules) || []),
+    ]),
+    routePolicy,
   };
 }
 
@@ -748,14 +915,19 @@ class BlackwallShield {
       maxLength: 5000,
       allowSystemMessages: false,
       shadowMode: false,
+      preset: null,
       policyPack: null,
       shadowPolicyPacks: [],
       entityDetectors: [],
+      customPromptDetectors: [],
+      suppressPromptRules: [],
+      routePolicies: [],
       detectNamedEntities: false,
       semanticScorer: null,
       sessionBuffer: null,
       tokenBudgetFirewall: null,
       systemPrompt: null,
+      outputFirewallDefaults: {},
       onAlert: null,
       onTelemetry: null,
       webhookUrl: null,
@@ -764,10 +936,13 @@ class BlackwallShield {
   }
 
   inspectText(text) {
-    const pii = maskValue(text, this.options);
-    const injection = detectPromptInjection(text, this.options);
+    const effectiveOptions = resolveEffectiveShieldOptions(this.options);
+    const pii = maskValue(text, effectiveOptions);
+    let injection = detectPromptInjection(text, effectiveOptions);
+    injection = applyCustomPromptDetectors(injection, String(text || ''), effectiveOptions, {});
+    injection = applyPromptRuleSuppressions(injection, effectiveOptions.suppressPromptRules);
     return {
-      sanitized: pii.original || sanitizeText(text, this.options.maxLength),
+      sanitized: pii.original || sanitizeText(text, effectiveOptions.maxLength),
       promptInjection: injection,
       sensitiveData: {
         findings: pii.findings,
@@ -792,35 +967,43 @@ class BlackwallShield {
   }
 
   async guardModelRequest({ messages = [], metadata = {}, allowSystemMessages = this.options.allowSystemMessages, comparePolicyPacks = [] } = {}) {
+    const effectiveOptions = resolveEffectiveShieldOptions(this.options, metadata);
+    const effectiveAllowSystemMessages = allowSystemMessages === this.options.allowSystemMessages
+      ? effectiveOptions.allowSystemMessages
+      : allowSystemMessages;
     const normalizedMessages = normalizeMessages(messages, {
-      maxMessages: this.options.maxMessages,
-      allowSystemMessages,
+      maxMessages: effectiveOptions.maxMessages,
+      allowSystemMessages: effectiveAllowSystemMessages,
     });
     const masked = maskMessages(normalizedMessages, {
-      includeOriginals: this.options.includeOriginals,
-      syntheticReplacement: this.options.syntheticReplacement,
-      maxLength: this.options.maxLength,
-      allowSystemMessages,
+      includeOriginals: effectiveOptions.includeOriginals,
+      syntheticReplacement: effectiveOptions.syntheticReplacement,
+      maxLength: effectiveOptions.maxLength,
+      allowSystemMessages: effectiveAllowSystemMessages,
+      entityDetectors: effectiveOptions.entityDetectors,
+      detectNamedEntities: effectiveOptions.detectNamedEntities,
     });
     const promptCandidate = normalizedMessages.filter((msg) => msg.role !== 'assistant');
-    const sessionBuffer = this.options.sessionBuffer;
+    const sessionBuffer = effectiveOptions.sessionBuffer;
     if (sessionBuffer && typeof sessionBuffer.record === 'function') {
       promptCandidate.forEach((msg) => sessionBuffer.record(msg.content));
     }
     const sessionContext = sessionBuffer && typeof sessionBuffer.render === 'function'
       ? sessionBuffer.render()
       : promptCandidate;
-    const injection = detectPromptInjection(sessionContext, this.options);
+    let injection = detectPromptInjection(sessionContext, effectiveOptions);
+    injection = applyCustomPromptDetectors(injection, Array.isArray(sessionContext) ? JSON.stringify(sessionContext) : String(sessionContext || ''), effectiveOptions, metadata);
+    injection = applyPromptRuleSuppressions(injection, effectiveOptions.suppressPromptRules);
 
-    const primaryPolicy = resolvePolicyPack(this.options.policyPack);
-    const threshold = (primaryPolicy && primaryPolicy.promptInjectionThreshold) || this.options.promptInjectionThreshold;
-    const wouldBlock = this.options.blockOnPromptInjection && compareRisk(injection.level, threshold);
-    const shouldBlock = this.options.shadowMode ? false : wouldBlock;
-    const shouldNotify = compareRisk(injection.level, this.options.notifyOnRiskLevel);
-    const policyNames = [...new Set([...(this.options.shadowPolicyPacks || []), ...comparePolicyPacks].filter(Boolean))];
-    const policyComparisons = policyNames.map((name) => evaluatePolicyPack(injection, name, this.options.promptInjectionThreshold));
-    const budgetResult = this.options.tokenBudgetFirewall && typeof this.options.tokenBudgetFirewall.inspect === 'function'
-      ? this.options.tokenBudgetFirewall.inspect({
+    const primaryPolicy = resolvePolicyPack(effectiveOptions.policyPack);
+    const threshold = (primaryPolicy && primaryPolicy.promptInjectionThreshold) || effectiveOptions.promptInjectionThreshold;
+    const wouldBlock = effectiveOptions.blockOnPromptInjection && compareRisk(injection.level, threshold);
+    const shouldBlock = effectiveOptions.shadowMode ? false : wouldBlock;
+    const shouldNotify = compareRisk(injection.level, effectiveOptions.notifyOnRiskLevel);
+    const policyNames = [...new Set([...(effectiveOptions.shadowPolicyPacks || []), ...comparePolicyPacks].filter(Boolean))];
+    const policyComparisons = policyNames.map((name) => evaluatePolicyPack(injection, name, effectiveOptions.promptInjectionThreshold));
+    const budgetResult = effectiveOptions.tokenBudgetFirewall && typeof effectiveOptions.tokenBudgetFirewall.inspect === 'function'
+      ? effectiveOptions.tokenBudgetFirewall.inspect({
         userId: metadata.userId || metadata.user_id || 'anonymous',
         tenantId: metadata.tenantId || metadata.tenant_id || 'default',
         messages: normalizedMessages,
@@ -838,7 +1021,7 @@ class BlackwallShield {
         hasSensitiveData: masked.hasSensitiveData,
       },
       enforcement: {
-        shadowMode: this.options.shadowMode,
+        shadowMode: effectiveOptions.shadowMode,
         wouldBlock: wouldBlock || !budgetResult.allowed,
         blocked: shouldBlock || !budgetResult.allowed,
         threshold,
@@ -846,6 +1029,13 @@ class BlackwallShield {
       policyPack: primaryPolicy ? primaryPolicy.name : null,
       policyComparisons,
       tokenBudget: budgetResult,
+      coreInterfaces: CORE_INTERFACES,
+      routePolicy: effectiveOptions.routePolicy ? {
+        route: metadata.route || metadata.path || null,
+        suppressPromptRules: effectiveOptions.routePolicy.suppressPromptRules || [],
+        policyPack: effectiveOptions.routePolicy.policyPack || null,
+        preset: effectiveOptions.routePolicy.preset || null,
+      } : null,
       telemetry: {
         eventType: 'llm_request_reviewed',
         promptInjectionRuleHits: countFindingsByType(injection.matches),
@@ -861,7 +1051,7 @@ class BlackwallShield {
     await this.emitTelemetry(createTelemetryEvent('llm_request_reviewed', {
       metadata,
       blocked: shouldBlock || !budgetResult.allowed,
-      shadowMode: this.options.shadowMode,
+      shadowMode: effectiveOptions.shadowMode,
       report,
     }));
 
@@ -886,14 +1076,17 @@ class BlackwallShield {
   }
 
   async reviewModelResponse({ output, metadata = {}, outputFirewall = null, firewallOptions = {} } = {}) {
-    const primaryPolicy = resolvePolicyPack(this.options.policyPack);
+    const effectiveOptions = resolveEffectiveShieldOptions(this.options, metadata);
+    const primaryPolicy = resolvePolicyPack(effectiveOptions.policyPack);
     const firewall = outputFirewall || new OutputFirewall({
       riskThreshold: (primaryPolicy && primaryPolicy.outputRiskThreshold) || 'high',
-      systemPrompt: this.options.systemPrompt,
+      systemPrompt: effectiveOptions.systemPrompt,
+      ...effectiveOptions.outputFirewallDefaults,
       ...firewallOptions,
     });
     const review = firewall.inspect(output, {
-      systemPrompt: this.options.systemPrompt,
+      systemPrompt: effectiveOptions.systemPrompt,
+      ...(effectiveOptions.outputFirewallDefaults || {}),
       ...firewallOptions,
     });
     const report = {
@@ -902,6 +1095,7 @@ class BlackwallShield {
       metadata,
       outputReview: {
         ...review,
+        coreInterfaces: CORE_INTERFACES,
         telemetry: {
           eventType: 'llm_output_reviewed',
           findingCounts: countFindingsByType(review.findings),
@@ -987,6 +1181,38 @@ class BlackwallShield {
       response,
       review,
     };
+  }
+
+  async protectWithAdapter({
+    adapter,
+    messages = [],
+    metadata = {},
+    allowSystemMessages = this.options.allowSystemMessages,
+    comparePolicyPacks = [],
+    outputFirewall = null,
+    firewallOptions = {},
+  } = {}) {
+    if (!adapter || typeof adapter.invoke !== 'function') {
+      throw new TypeError('adapter.invoke must be a function');
+    }
+    return this.protectModelCall({
+      messages,
+      metadata,
+      allowSystemMessages,
+      comparePolicyPacks,
+      outputFirewall,
+      firewallOptions,
+      callModel: async (payload) => {
+        const result = await adapter.invoke(payload);
+        return result && Object.prototype.hasOwnProperty.call(result, 'response') ? result.response : result;
+      },
+      mapOutput: async (response, request) => {
+        if (typeof adapter.extractOutput === 'function') {
+          return adapter.extractOutput(response, request);
+        }
+        return response && Object.prototype.hasOwnProperty.call(response, 'output') ? response.output : response;
+      },
+    });
   }
 }
 
@@ -1641,6 +1867,18 @@ function createLlamaIndexCallback({ shield, metadata = {} } = {}) {
   };
 }
 
+function buildShieldOptions(options = {}) {
+  const presetOptions = resolveShieldPreset(options.preset);
+  return {
+    ...presetOptions,
+    ...options,
+    shadowPolicyPacks: dedupeArray([
+      ...(presetOptions.shadowPolicyPacks || []),
+      ...(options.shadowPolicyPacks || []),
+    ]),
+  };
+}
+
 module.exports = {
   AgenticCapabilityGater,
   AgentIdentityRegistry,
@@ -1659,6 +1897,8 @@ module.exports = {
   SENSITIVE_PATTERNS,
   PROMPT_INJECTION_RULES,
   POLICY_PACKS,
+  SHIELD_PRESETS,
+  CORE_INTERFACES,
   sanitizeText,
   deobfuscateText,
   maskText,
@@ -1680,6 +1920,11 @@ module.exports = {
   buildAdminDashboardModel,
   getRedTeamPromptLibrary,
   runRedTeamSuite,
+  buildShieldOptions,
+  createOpenAIAdapter,
+  createAnthropicAdapter,
+  createGeminiAdapter,
+  createOpenRouterAdapter,
   createExpressMiddleware,
   createLangChainCallbacks,
   createLlamaIndexCallback,
