@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.6
+
+- Added production-ready telemetry summaries grouped by route, tenant, model, policy outcome, and top rules
+- Added first-class TypeScript declarations for the main package and subpath exports
+- Fixed scoped package import examples and improved Next.js-native guidance
+
 ## 0.1.5
 
 - Added route-level operational telemetry summaries for easier rollout visibility

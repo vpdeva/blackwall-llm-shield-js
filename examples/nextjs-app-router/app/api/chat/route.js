@@ -1,4 +1,4 @@
-import { BlackwallShield } from 'blackwall-llm-shield-js';
+import { BlackwallShield } from '@vpdeva/blackwall-llm-shield-js';
 
 const shield = new BlackwallShield({
   blockOnPromptInjection: true,

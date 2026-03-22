@@ -23,6 +23,13 @@ Recommended rollout order:
 3. Add route-level overrides for high-risk flows such as admin, billing, exports, and tool-calling
 4. Promote specific routes from shadow mode to blocking only after reviewing false-positive rates
 
+Operational questions this should answer:
+
+- What would have been blocked this week?
+- Which routes trigger the most prompt-injection findings?
+- Which tenants or models show the highest concentration of severe findings?
+- Which rules are most common before enforcement is turned on?
+
 ## Regression Expectations
 
 Current regression coverage includes:

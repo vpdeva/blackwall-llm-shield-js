@@ -465,13 +465,17 @@ test('anthropic adapter preserves system prompts and extracts text output', asyn
 
 test('operational telemetry summarizer groups events by route and severity', () => {
   const summary = summarizeOperationalTelemetry([
-    { type: 'llm_request_reviewed', metadata: { route: '/api/chat' }, blocked: false, shadowMode: true, report: { promptInjection: { level: 'medium' } } },
-    { type: 'llm_output_reviewed', metadata: { route: '/api/chat' }, blocked: true, report: { outputReview: { severity: 'high' } } },
+    { type: 'llm_request_reviewed', metadata: { route: '/api/chat', tenantId: 't1', model: 'gpt-4.1-mini' }, blocked: false, shadowMode: true, report: { promptInjection: { level: 'medium', matches: [{ id: 'ignore_instructions' }] } } },
+    { type: 'llm_output_reviewed', metadata: { route: '/api/chat', tenantId: 't1', model: 'gpt-4.1-mini' }, blocked: true, report: { outputReview: { severity: 'high' } } },
   ]);
 
   assert.equal(summary.totalEvents, 2);
   assert.equal(summary.byRoute['/api/chat'], 2);
+  assert.equal(summary.byTenant.t1, 2);
+  assert.equal(summary.byModel['gpt-4.1-mini'], 2);
   assert.equal(summary.blockedEvents, 1);
+  assert.equal(summary.byPolicyOutcome.shadowBlocked, 1);
+  assert.equal(summary.topRules.ignore_instructions, 1);
   assert.equal(summary.highestSeverity, 'high');
 });
 

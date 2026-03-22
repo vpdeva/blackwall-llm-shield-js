@@ -1,16 +1,29 @@
 {
   "name": "@vpdeva/blackwall-llm-shield-js",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Open-source JavaScript enterprise LLM protection toolkit for Node.js and Next.js",
   "license": "Apache-2.0",
   "author": "Vish <hello@vish.au> (https://vish.au)",
   "type": "commonjs",
   "main": "src/index.js",
+  "types": "./index.d.ts",
   "exports": {
-    ".": "./src/index.js",
-    "./integrations": "./src/integrations.js",
-    "./providers": "./src/providers.js",
-    "./semantic": "./src/semantic.js"
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./src/index.js"
+    },
+    "./integrations": {
+      "types": "./integrations.d.ts",
+      "default": "./src/integrations.js"
+    },
+    "./providers": {
+      "types": "./providers.d.ts",
+      "default": "./src/providers.js"
+    },
+    "./semantic": {
+      "types": "./semantic.d.ts",
+      "default": "./src/semantic.js"
+    }
   },
   "bin": {
     "blackwall-scorecard": "src/scorecard.js"
@@ -26,6 +39,10 @@
   },
   "files": [
     "src",
+    "index.d.ts",
+    "integrations.d.ts",
+    "providers.d.ts",
+    "semantic.d.ts",
     "README.md",
     "LICENSE",
     "NOTICE"

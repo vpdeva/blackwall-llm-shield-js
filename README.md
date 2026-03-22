@@ -32,7 +32,7 @@ npm install @xenova/transformers
 ## Fast Start
 
 ```js
-const { BlackwallShield } = require('blackwall-llm-shield-js');
+const { BlackwallShield } = require('@vpdeva/blackwall-llm-shield-js');
 
 const shield = new BlackwallShield({
   blockOnPromptInjection: true,
@@ -95,9 +95,9 @@ Use `createExpressMiddleware()`, `createLangChainCallbacks()`, or `createLlamaIn
 
 ### Subpath modules
 
-Use `require('blackwall-llm-shield-js/integrations')` for callback wrappers and `require('blackwall-llm-shield-js/semantic')` for optional local semantic scoring adapters.
+Use `require('@vpdeva/blackwall-llm-shield-js/integrations')` for callback wrappers and `require('@vpdeva/blackwall-llm-shield-js/semantic')` for optional local semantic scoring adapters.
 
-Use `require('blackwall-llm-shield-js/providers')` for provider adapter factories.
+Use `require('@vpdeva/blackwall-llm-shield-js/providers')` for provider adapter factories.
 
 ## Core Building Blocks
 
@@ -151,7 +151,7 @@ if (!guarded.allowed) {
 ### Wrap a provider call end to end
 
 ```js
-const { BlackwallShield, createOpenAIAdapter } = require('blackwall-llm-shield-js');
+const { BlackwallShield, createOpenAIAdapter } = require('@vpdeva/blackwall-llm-shield-js');
 
 const shield = new BlackwallShield({
   preset: 'shadowFirst',
@@ -234,15 +234,20 @@ const toolFirewall = new ToolPermissionFirewall({
 ### Operational telemetry summaries
 
 ```js
+const { summarizeOperationalTelemetry } = require('@vpdeva/blackwall-llm-shield-js');
 const summary = summarizeOperationalTelemetry(events);
 console.log(summary.byRoute);
 console.log(summary.highestSeverity);
 ```
 
+### TypeScript
+
+The package now ships first-class declaration files for the main entry point plus `integrations`, `providers`, and `semantic` subpaths, so local declaration shims should no longer be necessary in TypeScript apps.
+
 ### Inspect model output
 
 ```js
-const { OutputFirewall } = require('blackwall-llm-shield-js');
+const { OutputFirewall } = require('@vpdeva/blackwall-llm-shield-js');
 
 const firewall = new OutputFirewall({
   riskThreshold: 'high',
@@ -259,7 +264,7 @@ console.log(review.allowed);
 ### Gate tool execution
 
 ```js
-const { ToolPermissionFirewall } = require('blackwall-llm-shield-js');
+const { ToolPermissionFirewall } = require('@vpdeva/blackwall-llm-shield-js');
 
 const tools = new ToolPermissionFirewall({
   allowedTools: ['search', 'lookupCustomer'],
@@ -273,6 +278,8 @@ console.log(tools.inspectCall({ tool: 'lookupCustomer', args: { id: 'cus_123' } 
 
 - [`examples/nextjs-app-router/app/api/chat/route.js`](/Users/vishnu/Documents/blackwall-llm-shield/blackwall-llm-shield-js/examples/nextjs-app-router/app/api/chat/route.js) shows guarded request handling in a Next.js route
 - [`examples/admin-dashboard/index.html`](/Users/vishnu/Documents/blackwall-llm-shield/blackwall-llm-shield-js/examples/admin-dashboard/index.html) shows a polished security command center demo
+
+For Next.js, the most production-real patterns are App Router route handlers, server actions for trusted internal mutations, and streaming endpoints that apply output review to assembled or final chunks instead of raw intermediate tokens.
 
 ## Release Commands
 

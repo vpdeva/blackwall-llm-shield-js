@@ -350,21 +350,46 @@ function summarizeOperationalTelemetry(events = []) {
     shadowModeEvents: 0,
     byType: {},
     byRoute: {},
+    byTenant: {},
+    byModel: {},
+    byPolicyOutcome: {
+      blocked: 0,
+      shadowBlocked: 0,
+      allowed: 0,
+    },
+    topRules: {},
     highestSeverity: 'low',
   };
   for (const event of Array.isArray(events) ? events : []) {
     const type = event && event.type ? event.type : 'unknown';
-    const route = event && event.metadata && (event.metadata.route || event.metadata.path) ? (event.metadata.route || event.metadata.path) : 'unknown';
+    const metadata = event && event.metadata ? event.metadata : {};
+    const route = metadata.route || metadata.path || 'unknown';
+    const tenant = metadata.tenantId || metadata.tenant_id || 'unknown';
+    const model = metadata.model || metadata.modelName || 'unknown';
     const severity = event && event.report && event.report.outputReview
       ? event.report.outputReview.severity
       : (event && event.report && event.report.promptInjection ? event.report.promptInjection.level : 'low');
     summary.totalEvents += 1;
     summary.byType[type] = (summary.byType[type] || 0) + 1;
     summary.byRoute[route] = (summary.byRoute[route] || 0) + 1;
+    summary.byTenant[tenant] = (summary.byTenant[tenant] || 0) + 1;
+    summary.byModel[model] = (summary.byModel[model] || 0) + 1;
     if (event && event.blocked) summary.blockedEvents += 1;
     if (event && event.shadowMode) summary.shadowModeEvents += 1;
+    if (event && event.blocked) summary.byPolicyOutcome.blocked += 1;
+    else if (event && event.shadowMode) summary.byPolicyOutcome.shadowBlocked += 1;
+    else summary.byPolicyOutcome.allowed += 1;
+    const rules = event && event.report && event.report.promptInjection && Array.isArray(event.report.promptInjection.matches)
+      ? event.report.promptInjection.matches.map((item) => item.id).filter(Boolean)
+      : [];
+    rules.forEach((rule) => {
+      summary.topRules[rule] = (summary.topRules[rule] || 0) + 1;
+    });
     if (severityWeight(severity) > severityWeight(summary.highestSeverity)) summary.highestSeverity = severity;
   }
+  summary.topRules = Object.fromEntries(
+    Object.entries(summary.topRules).sort((a, b) => b[1] - a[1]).slice(0, 10)
+  );
   return summary;
 }
 
