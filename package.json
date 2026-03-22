@@ -31,11 +31,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/vppdeva/blackwall-llm-shield.git"
+    "url": "git+https://github.com/vpdeva/blackwall-llm-shield-js.git"
   },
   "homepage": "https://vish.au",
   "bugs": {
-    "url": "https://github.com/vpdeva/blackwall-llm-shield/issues"
+    "url": "https://github.com/vpdeva/blackwall-llm-shield-js/issues"
   },
   "funding": {
     "type": "Buy Vish a coffee",
