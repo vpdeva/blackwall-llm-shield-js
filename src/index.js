@@ -372,6 +372,83 @@ function createTelemetryEvent(type, payload = {}) {
   };
 }
 
+function normalizeIdentityMetadata(metadata = {}, resolver = null) {
+  const resolved = typeof resolver === 'function' ? resolver(metadata) || {} : {};
+  const source = { ...metadata, ...resolved };
+  const groups = Array.isArray(source.groups)
+    ? source.groups
+    : (Array.isArray(source.ssoGroups) ? source.ssoGroups : (typeof source.groups === 'string' ? source.groups.split(',').map((item) => item.trim()).filter(Boolean) : []));
+  return {
+    userId: source.userId || source.user_id || source.subject || source.sub || 'anonymous',
+    userEmail: source.userEmail || source.user_email || source.email || source.upn || null,
+    userName: source.userName || source.user_name || source.displayName || source.display_name || source.name || null,
+    tenantId: source.tenantId || source.tenant_id || source.orgId || source.org_id || 'default',
+    identityProvider: source.identityProvider || source.identity_provider || source.ssoProvider || source.sso_provider || source.idp || null,
+    authMethod: source.authMethod || source.auth_method || source.authType || source.auth_type || null,
+    sessionId: source.sessionId || source.session_id || null,
+    groups,
+  };
+}
+
+function buildEnterpriseTelemetryEvent(event = {}, resolver = null) {
+  const metadata = event && event.metadata ? event.metadata : {};
+  const actor = normalizeIdentityMetadata(metadata, resolver);
+  return {
+    ...event,
+    actor,
+    metadata: {
+      ...metadata,
+      userId: metadata.userId || metadata.user_id || actor.userId,
+      tenantId: metadata.tenantId || metadata.tenant_id || actor.tenantId,
+      identityProvider: metadata.identityProvider || metadata.identity_provider || actor.identityProvider,
+      sessionId: metadata.sessionId || metadata.session_id || actor.sessionId,
+    },
+  };
+}
+
+function buildPowerBIRecord(event = {}) {
+  const actor = event.actor || normalizeIdentityMetadata(event.metadata || {});
+  const metadata = event.metadata || {};
+  return {
+    eventType: event.type || 'unknown',
+    createdAt: event.createdAt || new Date().toISOString(),
+    route: metadata.route || metadata.path || 'unknown',
+    feature: metadata.feature || metadata.capability || metadata.route || 'unknown',
+    model: metadata.model || metadata.modelName || 'unknown',
+    tenantId: actor.tenantId || 'default',
+    userId: actor.userId || 'anonymous',
+    userEmail: actor.userEmail || null,
+    userName: actor.userName || null,
+    identityProvider: actor.identityProvider || null,
+    authMethod: actor.authMethod || null,
+    sessionId: actor.sessionId || null,
+    blocked: !!event.blocked,
+    shadowMode: !!event.shadowMode,
+    severity: (event.report && event.report.outputReview && event.report.outputReview.severity)
+      || (event.report && event.report.promptInjection && event.report.promptInjection.level)
+      || 'low',
+    topRule: (event.report && event.report.promptInjection && Array.isArray(event.report.promptInjection.matches) && event.report.promptInjection.matches[0] && event.report.promptInjection.matches[0].id) || null,
+  };
+}
+
+class PowerBIExporter {
+  constructor(options = {}) {
+    this.endpointUrl = options.endpointUrl || options.webhookUrl || null;
+    this.fetchImpl = options.fetchImpl || (typeof fetch === 'function' ? fetch : null);
+  }
+
+  async send(events = []) {
+    const records = (Array.isArray(events) ? events : [events]).filter(Boolean).map((event) => buildPowerBIRecord(event));
+    if (!this.endpointUrl || !this.fetchImpl) return records;
+    await this.fetchImpl(this.endpointUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(records),
+    });
+    return records;
+  }
+}
+
 function summarizeOperationalTelemetry(events = []) {
   const summary = {
     totalEvents: 0,
@@ -380,6 +457,8 @@ function summarizeOperationalTelemetry(events = []) {
     byType: {},
     byRoute: {},
     byFeature: {},
+    byUser: {},
+    byIdentityProvider: {},
     byTenant: {},
     byModel: {},
     byPolicyOutcome: {
@@ -398,6 +477,8 @@ function summarizeOperationalTelemetry(events = []) {
     const route = metadata.route || metadata.path || 'unknown';
     const feature = metadata.feature || metadata.capability || route;
     const tenant = metadata.tenantId || metadata.tenant_id || 'unknown';
+    const user = metadata.userId || metadata.user_id || (event.actor && event.actor.userId) || 'unknown';
+    const idp = metadata.identityProvider || metadata.identity_provider || (event.actor && event.actor.identityProvider) || 'unknown';
     const model = metadata.model || metadata.modelName || 'unknown';
     const severity = event && event.report && event.report.outputReview
       ? event.report.outputReview.severity
@@ -406,6 +487,8 @@ function summarizeOperationalTelemetry(events = []) {
     summary.byType[type] = (summary.byType[type] || 0) + 1;
     summary.byRoute[route] = (summary.byRoute[route] || 0) + 1;
     summary.byFeature[feature] = (summary.byFeature[feature] || 0) + 1;
+    summary.byUser[user] = (summary.byUser[user] || 0) + 1;
+    summary.byIdentityProvider[idp] = (summary.byIdentityProvider[idp] || 0) + 1;
     summary.byTenant[tenant] = (summary.byTenant[tenant] || 0) + 1;
     summary.byModel[model] = (summary.byModel[model] || 0) + 1;
     if (event && event.blocked) summary.blockedEvents += 1;
@@ -1112,6 +1195,8 @@ class BlackwallShield {
       outputFirewallDefaults: {},
       onAlert: null,
       onTelemetry: null,
+      telemetryExporters: [],
+      identityResolver: null,
       webhookUrl: null,
       ...options,
     };
@@ -1143,8 +1228,15 @@ class BlackwallShield {
   }
 
   async emitTelemetry(event) {
+    const enriched = buildEnterpriseTelemetryEvent(event, this.options.identityResolver);
     if (typeof this.options.onTelemetry === 'function') {
-      await this.options.onTelemetry(event);
+      await this.options.onTelemetry(enriched);
+    }
+    const exporters = Array.isArray(this.options.telemetryExporters) ? this.options.telemetryExporters : [];
+    for (const exporter of exporters) {
+      if (exporter && typeof exporter.send === 'function') {
+        await exporter.send([enriched]);
+      }
     }
   }
 
@@ -1563,9 +1655,10 @@ class CoTScanner {
 }
 
 class AgentIdentityRegistry {
-  constructor() {
+  constructor(options = {}) {
     this.identities = new Map();
     this.ephemeralTokens = new Map();
+    this.secret = options.secret || 'blackwall-agent-passport-secret';
   }
 
   register(agentId, profile = {}) {
@@ -1595,6 +1688,177 @@ class AgentIdentityRegistry {
     }
     return { valid: true, agentId: record.agentId };
   }
+
+  issueSignedPassport(agentId, options = {}) {
+    const identity = this.get(agentId) || this.register(agentId, options.profile || {});
+    const securityScore = options.securityScore != null
+      ? options.securityScore
+      : Math.max(0, 100 - (Object.values(identity.capabilities || {}).filter(Boolean).length * 10));
+    const passport = {
+      agentId,
+      issuedAt: new Date().toISOString(),
+      issuer: options.issuer || 'blackwall-llm-shield-js',
+      blackwallProtected: options.blackwallProtected !== false,
+      securityScore,
+      scopes: identity.scopes || [],
+      persona: identity.persona || 'default',
+      environment: options.environment || 'production',
+    };
+    const signature = crypto.createHmac('sha256', this.secret).update(JSON.stringify(passport)).digest('hex');
+    return { ...passport, signature };
+  }
+
+  verifySignedPassport(passport = {}) {
+    const { signature, ...unsigned } = passport || {};
+    if (!signature) return { valid: false, reason: 'Passport signature is required' };
+    const expected = crypto.createHmac('sha256', this.secret).update(JSON.stringify(unsigned)).digest('hex');
+    return {
+      valid: crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected)),
+      agentId: unsigned.agentId || null,
+      securityScore: unsigned.securityScore || null,
+      blackwallProtected: !!unsigned.blackwallProtected,
+    };
+  }
+}
+
+class ValueAtRiskCircuitBreaker {
+  constructor(options = {}) {
+    this.maxValuePerWindow = options.maxValuePerWindow || 5000;
+    this.windowMs = options.windowMs || (60 * 60 * 1000);
+    this.revocationMs = options.revocationMs || (30 * 60 * 1000);
+    this.valueExtractor = options.valueExtractor || ((args = {}, context = {}) => Number(context.actionValue != null ? context.actionValue : (args.amount != null ? args.amount : 0)));
+    this.entries = [];
+    this.revocations = new Map();
+  }
+
+  revokeSession(sessionId, durationMs = this.revocationMs) {
+    if (!sessionId) return null;
+    const expiresAt = Date.now() + durationMs;
+    this.revocations.set(sessionId, expiresAt);
+    return { sessionId, revokedUntil: new Date(expiresAt).toISOString() };
+  }
+
+  inspect({ tool, args = {}, context = {} } = {}) {
+    const sessionId = context.sessionId || context.session_id || null;
+    const now = Date.now();
+    const revokedUntil = sessionId ? this.revocations.get(sessionId) : null;
+    if (revokedUntil && revokedUntil > now) {
+      return {
+        allowed: false,
+        triggered: true,
+        requiresMfa: true,
+        reason: 'Session is revoked until MFA or human review completes',
+        revokedSession: sessionId,
+        revokedUntil: new Date(revokedUntil).toISOString(),
+        riskWindowValue: null,
+      };
+    }
+    this.entries = this.entries.filter((entry) => (now - entry.at) <= this.windowMs);
+    const actionValue = Math.max(0, Number(this.valueExtractor(args, context) || 0));
+    const key = sessionId || context.agentId || context.agent_id || context.userId || context.user_id || 'default';
+    const relevant = this.entries.filter((entry) => entry.key === key);
+    const riskWindowValue = relevant.reduce((sum, entry) => sum + entry.value, 0) + actionValue;
+    const triggered = riskWindowValue > this.maxValuePerWindow;
+    if (triggered) {
+      const revocation = this.revokeSession(sessionId);
+      return {
+        allowed: false,
+        triggered: true,
+        requiresMfa: true,
+        reason: `Value-at-risk threshold exceeded for ${tool || 'action'}`,
+        riskWindowValue,
+        threshold: this.maxValuePerWindow,
+        actionValue,
+        revokedSession: revocation && revocation.sessionId,
+        revokedUntil: revocation && revocation.revokedUntil,
+      };
+    }
+    this.entries.push({ key, tool: tool || 'unknown', value: actionValue, at: now });
+    return {
+      allowed: true,
+      triggered: false,
+      requiresMfa: false,
+      riskWindowValue,
+      threshold: this.maxValuePerWindow,
+      actionValue,
+    };
+  }
+}
+
+class ShadowConsensusAuditor {
+  constructor(options = {}) {
+    this.review = options.review || ((payload = {}) => {
+      const text = JSON.stringify({ tool: payload.tool, args: payload.args, sessionContext: payload.sessionContext || '' }).toLowerCase();
+      const disagreement = /\b(ignore previous|bypass|override|secret|reveal)\b/i.test(text);
+      return {
+        agreed: !disagreement,
+        disagreement,
+        reason: disagreement ? 'Logic Conflict: shadow auditor found risky reasoning drift' : null,
+      };
+    });
+  }
+
+  inspect(payload = {}) {
+    const result = this.review(payload) || {};
+    return {
+      agreed: result.agreed !== false,
+      disagreement: !!result.disagreement || result.agreed === false,
+      reason: result.reason || (result.agreed === false ? 'Logic Conflict detected by shadow auditor' : null),
+      auditor: result.auditor || 'shadow',
+    };
+  }
+}
+
+class DigitalTwinOrchestrator {
+  constructor(options = {}) {
+    this.toolSchemas = options.toolSchemas || [];
+    this.invocations = [];
+  }
+
+  generate() {
+    const handlers = {};
+    for (const schema of this.toolSchemas) {
+      if (!schema || !schema.name) continue;
+      handlers[schema.name] = async (args = {}) => {
+        const response = schema.mockResponse || schema.sampleResponse || { ok: true, tool: schema.name, args };
+        this.invocations.push({ tool: schema.name, args, response, at: new Date().toISOString() });
+        return response;
+      };
+    }
+    return {
+      handlers,
+      simulateCall: async (tool, args = {}) => {
+        if (!handlers[tool]) throw new Error(`No digital twin registered for ${tool}`);
+        return handlers[tool](args);
+      },
+      invocations: this.invocations,
+    };
+  }
+}
+
+function suggestPolicyOverride({ route = null, approval = null, guardResult = null, toolDecision = null } = {}) {
+  if (approval !== true) return null;
+  if (guardResult && guardResult.report && guardResult.report.promptInjection) {
+    const rules = (guardResult.report.promptInjection.matches || []).map((item) => item.id).filter(Boolean);
+    return {
+      route: route || (guardResult.report.metadata && (guardResult.report.metadata.route || guardResult.report.metadata.path)) || '*',
+      options: {
+        shadowMode: true,
+        suppressPromptRules: [...new Set(rules)],
+      },
+      rationale: 'Suggested from approved false positive',
+    };
+  }
+  if (toolDecision && toolDecision.approvalRequest) {
+    return {
+      route: route || ((toolDecision.approvalRequest.context || {}).route) || '*',
+      options: {
+        requireHumanApprovalFor: [toolDecision.approvalRequest.tool],
+      },
+      rationale: 'Suggested from approved high-impact tool action',
+    };
+  }
+  return null;
 }
 
 class AgenticCapabilityGater {
@@ -1737,6 +2001,9 @@ class ToolPermissionFirewall {
       validators: {},
       requireHumanApprovalFor: [],
       capabilityGater: null,
+      valueAtRiskCircuitBreaker: null,
+      consensusAuditor: null,
+      consensusRequiredFor: [],
       onApprovalRequest: null,
       approvalWebhookUrl: null,
       ...options,
@@ -1764,6 +2031,37 @@ class ToolPermissionFirewall {
       const gate = this.options.capabilityGater.evaluate(context.agentId, context.capabilities || {});
       if (!gate.allowed) {
         return { allowed: false, reason: gate.reason, requiresApproval: false, agentGate: gate };
+      }
+    }
+    if (this.options.valueAtRiskCircuitBreaker) {
+      const breaker = this.options.valueAtRiskCircuitBreaker.inspect({ tool, args, context });
+      if (!breaker.allowed) {
+        return {
+          allowed: false,
+          reason: breaker.reason,
+          requiresApproval: true,
+          requiresMfa: !!breaker.requiresMfa,
+          circuitBreaker: breaker,
+          approvalRequest: { tool, args, context, breaker },
+        };
+      }
+    }
+    if (this.options.consensusAuditor && (context.highImpact || this.options.consensusRequiredFor.includes(tool))) {
+      const consensus = this.options.consensusAuditor.inspect({
+        tool,
+        args,
+        context,
+        sessionContext: context.sessionContext || context.session_buffer || null,
+      });
+      if (consensus.disagreement) {
+        return {
+          allowed: false,
+          reason: consensus.reason || 'Logic Conflict detected by shadow auditor',
+          requiresApproval: true,
+          logicConflict: true,
+          consensus,
+          approvalRequest: { tool, args, context, consensus },
+        };
       }
     }
     const requiresApproval = this.options.requireHumanApprovalFor.includes(tool);
@@ -1860,11 +2158,14 @@ class AuditTrail {
   constructor(options = {}) {
     this.secret = options.secret || 'blackwall-default-secret';
     this.events = [];
+    this.identityResolver = options.identityResolver || null;
   }
 
   record(event = {}) {
+    const actor = event.actor || normalizeIdentityMetadata(event.metadata || event, this.identityResolver);
     const payload = {
       ...event,
+      actor,
       complianceMap: event.complianceMap || mapCompliance([
         ...(event.ruleIds || []),
         event.type === 'retrieval_poisoning_detected' ? 'retrieval_poisoning' : null,
@@ -2130,14 +2431,18 @@ module.exports = {
   AuditTrail,
   BlackwallShield,
   CoTScanner,
+  DigitalTwinOrchestrator,
   ImageMetadataScanner,
   LightweightIntentScorer,
   MCPSecurityProxy,
   OutputFirewall,
+  PowerBIExporter,
   RetrievalSanitizer,
   SessionBuffer,
+  ShadowConsensusAuditor,
   TokenBudgetFirewall,
   ToolPermissionFirewall,
+  ValueAtRiskCircuitBreaker,
   VisualInstructionDetector,
   SENSITIVE_PATTERNS,
   PROMPT_INJECTION_RULES,
@@ -2167,6 +2472,10 @@ module.exports = {
   runRedTeamSuite,
   buildShieldOptions,
   summarizeOperationalTelemetry,
+  suggestPolicyOverride,
+  normalizeIdentityMetadata,
+  buildEnterpriseTelemetryEvent,
+  buildPowerBIRecord,
   parseJsonOutput,
   createOpenAIAdapter,
   createAnthropicAdapter,

@@ -55,6 +55,8 @@ export interface ShieldOptions {
   routePolicies?: Array<{ route: string | RegExp | ((route: string, metadata: Record<string, unknown>) => boolean); options: Record<string, unknown> }>;
   customPromptDetectors?: Array<(payload: Record<string, unknown>) => Record<string, unknown> | Array<Record<string, unknown>> | null>;
   onTelemetry?: (event: Record<string, unknown>) => void | Promise<void>;
+  telemetryExporters?: Array<{ send(events: Array<Record<string, unknown>>): unknown }>;
+  identityResolver?: (metadata: Record<string, unknown>) => Record<string, unknown> | null;
   [key: string]: unknown;
 }
 
@@ -79,6 +81,22 @@ export class ToolPermissionFirewall {
   inspectCallAsync?(input: Record<string, unknown>): Promise<Record<string, unknown>>;
 }
 
+export class ValueAtRiskCircuitBreaker {
+  constructor(options?: Record<string, unknown>);
+  inspect(input?: Record<string, unknown>): Record<string, unknown>;
+  revokeSession(sessionId: string, durationMs?: number): Record<string, unknown> | null;
+}
+
+export class ShadowConsensusAuditor {
+  constructor(options?: Record<string, unknown>);
+  inspect(input?: Record<string, unknown>): Record<string, unknown>;
+}
+
+export class DigitalTwinOrchestrator {
+  constructor(options?: Record<string, unknown>);
+  generate(): Record<string, unknown>;
+}
+
 export class RetrievalSanitizer {
   constructor(options?: Record<string, unknown>);
   sanitizeDocuments(documents: Array<Record<string, unknown>>): Array<Record<string, unknown>>;
@@ -97,6 +115,14 @@ export const POLICY_PACKS: Record<string, Record<string, unknown>>;
 export function buildShieldOptions(options?: Record<string, unknown>): Record<string, unknown>;
 export function summarizeOperationalTelemetry(events?: Array<Record<string, unknown>>): Record<string, unknown>;
 export function parseJsonOutput(output: unknown): unknown;
+export function normalizeIdentityMetadata(metadata?: Record<string, unknown>, resolver?: ((metadata: Record<string, unknown>) => Record<string, unknown> | null) | null): Record<string, unknown>;
+export function buildEnterpriseTelemetryEvent(event?: Record<string, unknown>, resolver?: ((metadata: Record<string, unknown>) => Record<string, unknown> | null) | null): Record<string, unknown>;
+export function buildPowerBIRecord(event?: Record<string, unknown>): Record<string, unknown>;
+export function suggestPolicyOverride(input?: Record<string, unknown>): Record<string, unknown> | null;
+export class PowerBIExporter {
+  constructor(options?: Record<string, unknown>);
+  send(events?: Array<Record<string, unknown>> | Record<string, unknown>): Promise<Array<Record<string, unknown>>>;
+}
 
 export function createOpenAIAdapter(input: Record<string, unknown>): ProviderAdapter;
 export function createAnthropicAdapter(input: Record<string, unknown>): ProviderAdapter;

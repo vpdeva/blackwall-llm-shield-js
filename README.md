@@ -89,6 +89,8 @@ The current recommendation for enterprise teams is a controlled pilot first: sta
 
 Use `summarizeOperationalTelemetry()` with emitted telemetry events when you want route-level summaries, blocked-event counts, and rollout visibility for operators.
 
+Enterprise deployments can also enrich emitted events with SSO/user context and forward flattened records to Power BI or other downstream reporting systems.
+
 ### Output grounding and tone review
 
 `OutputFirewall` can compare responses against retrieved documents and flag hallucination-style unsupported claims or unprofessional tone.
@@ -119,6 +121,8 @@ Use it after the model responds to catch leaked secrets, dangerous code patterns
 
 Use it to allowlist tools, block disallowed tools, validate arguments, and require approval for risky operations.
 
+It can also integrate with `ValueAtRiskCircuitBreaker` for high-value actions and `ShadowConsensusAuditor` for secondary logic review before sensitive tools execute.
+
 ### `RetrievalSanitizer`
 
 Use it before injecting retrieved documents into context so hostile instructions in your RAG data store do not quietly become model instructions.
@@ -141,6 +145,14 @@ Recommended presets:
 ### `AuditTrail`
 
 Use it to record signed events, summarize security activity, and power dashboards or downstream analysis.
+
+### Advanced Agent Controls
+
+- `ValueAtRiskCircuitBreaker` for financial or high-value operational actions
+- `ShadowConsensusAuditor` for second-model or secondary-review logic conflict checks
+- `DigitalTwinOrchestrator` for mock tool environments and sandbox simulations
+- `suggestPolicyOverride()` for narrow false-positive tuning suggestions after HITL approvals
+- `AgentIdentityRegistry.issueSignedPassport()` for signed agent identity exchange
 
 ## Example Workflows
 
@@ -199,6 +211,48 @@ function createModelShield(shield) {
     },
   };
 }
+```
+
+### Add SSO-aware telemetry and Power BI export
+
+```js
+const { BlackwallShield, PowerBIExporter } = require('@vpdeva/blackwall-llm-shield-js');
+
+const shield = new BlackwallShield({
+  identityResolver: (metadata) => ({
+    userId: metadata.sso?.subject,
+    userEmail: metadata.sso?.email,
+    userName: metadata.sso?.displayName,
+    identityProvider: metadata.sso?.provider,
+    groups: metadata.sso?.groups,
+  }),
+  telemetryExporters: [
+    new PowerBIExporter({ endpointUrl: process.env.POWER_BI_PUSH_URL }),
+  ],
+});
+```
+
+### Protect high-value actions with a VaR breaker and consensus auditor
+
+```js
+const firewall = new ToolPermissionFirewall({
+  allowedTools: ['issueRefund'],
+  valueAtRiskCircuitBreaker: new ValueAtRiskCircuitBreaker({ maxValuePerWindow: 5000 }),
+  consensusAuditor: new ShadowConsensusAuditor(),
+  consensusRequiredFor: ['issueRefund'],
+});
+```
+
+### Generate a digital twin for sandbox testing
+
+```js
+const twin = new DigitalTwinOrchestrator({
+  toolSchemas: [
+    { name: 'lookupOrder', mockResponse: { orderId: 'ord_1', status: 'mocked' } },
+  ],
+}).generate();
+
+await twin.simulateCall('lookupOrder', { orderId: 'ord_1' });
 ```
 
 ### Protect a strict JSON workflow
@@ -319,6 +373,8 @@ const { summarizeOperationalTelemetry } = require('@vpdeva/blackwall-llm-shield-
 const summary = summarizeOperationalTelemetry(events);
 console.log(summary.byRoute);
 console.log(summary.byFeature);
+console.log(summary.byUser);
+console.log(summary.byIdentityProvider);
 console.log(summary.noisiestRoutes);
 console.log(summary.weeklyBlockEstimate);
 console.log(summary.highestSeverity);
@@ -372,6 +428,8 @@ For Gemini-heavy apps, the bundled adapter now preserves system instructions plu
 - A controlled pilot is a good fit today when you want shadow-mode prompt and output protection without forcing hard blocking on every route immediately.
 - If you prefer not to depend on Blackwall directly everywhere, wrap it behind your own internal model-security abstraction and expose only the contract your app teams need.
 - For broader approval, focus rollout reviews on false-positive rates, noisiest routes, and latency budgets alongside jailbreak coverage.
+- For executive or staff-facing workflows, always attach authenticated identity metadata so telemetry can answer which user triggered which risky request or output event.
+- For high-impact agentic workflows, combine tool approval, VaR limits, digital-twin tests, and signed agent passports instead of relying on a single detector.
 
 ## Release Commands
 

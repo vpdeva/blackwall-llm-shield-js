@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.0
+
+- Added `ValueAtRiskCircuitBreaker` for high-value tool/action thresholds with session revocation and MFA-style escalation flags
+- Added `ShadowConsensusAuditor` integration in tool gating for logic-conflict review on high-impact actions
+- Added `DigitalTwinOrchestrator` for mock tool sandboxes and pre-production twin testing
+- Added `suggestPolicyOverride()` for self-healing policy tuning suggestions after approved false positives
+- Added signed agent passports in `AgentIdentityRegistry`
+
+## 0.1.9
+
+- Added enterprise telemetry enrichment with SSO/user attribution on emitted events and audit records
+- Added Power BI-friendly record builders and exporter hooks for telemetry pipelines
+- Expanded operational summaries to break down findings by user and identity provider
+
 ## 0.1.8
 
 - Expanded enterprise rollout guidance for controlled pilots, internal shield wrappers, and false-positive tuning

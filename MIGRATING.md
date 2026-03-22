@@ -1,4 +1,4 @@
-# Migrating to 0.1.8
+# Migrating to 0.1.9
 
 ## Stable Contracts
 
@@ -20,6 +20,12 @@ These contracts are also exposed in `CORE_INTERFACES` so applications can log or
 - Added presets and route-level policy overrides
 - Added custom prompt detector hooks for domain tuning
 - Expanded rollout guidance, benchmarks, and regression notes
+
+## What Changed in 0.1.9
+
+- Added identity-aware telemetry enrichment for SSO-backed applications
+- Added Power BI-friendly export helpers and telemetry exporter hooks
+- Expanded summaries to support user-level and identity-provider reporting
 
 ## What Changed in 0.1.8
 

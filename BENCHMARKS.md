@@ -34,6 +34,7 @@ Operational questions this should answer:
 - What would have been blocked this week?
 - Which routes trigger the most prompt-injection findings?
 - Which features or workflows are producing the most noise?
+- Which users or identity providers are associated with the most risky traffic?
 - Which tenants or models show the highest concentration of severe findings?
 - Which rules are most common before enforcement is turned on?
 - Did the latest release increase alerts on the same route mix?
