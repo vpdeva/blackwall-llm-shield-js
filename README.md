@@ -100,6 +100,10 @@ Enterprise deployments can also enrich emitted events with SSO/user context and 
 
 Use `createExpressMiddleware()`, `createLangChainCallbacks()`, or `createLlamaIndexCallback()` to drop Blackwall into existing app and orchestration flows faster.
 
+### Example guide
+
+Use the wiki-ready examples page at [`wiki/Running-Examples.md`](/Users/vishnu/Documents/blackwall-llm-shield/blackwall-llm-shield-js/wiki/Running-Examples.md) for copy-paste setup and run commands.
+
 ### Subpath modules
 
 Use `require('@vpdeva/blackwall-llm-shield-js/integrations')` for callback wrappers and `require('@vpdeva/blackwall-llm-shield-js/semantic')` for optional local semantic scoring adapters.
@@ -452,6 +456,7 @@ console.log(tools.inspectCall({ tool: 'lookupCustomer', args: { id: 'cus_123' } 
 
 - [`examples/nextjs-app-router/app/api/chat/route.js`](/Users/vishnu/Documents/blackwall-llm-shield/blackwall-llm-shield-js/examples/nextjs-app-router/app/api/chat/route.js) shows guarded request handling in a Next.js route
 - [`examples/admin-dashboard/index.html`](/Users/vishnu/Documents/blackwall-llm-shield/blackwall-llm-shield-js/examples/admin-dashboard/index.html) shows a polished security command center demo
+- [`wiki/Running-Examples.md`](/Users/vishnu/Documents/blackwall-llm-shield/blackwall-llm-shield-js/wiki/Running-Examples.md) shows how to run the available examples end to end
 
 For Next.js, the most production-real patterns are App Router route handlers, server actions for trusted internal mutations, and streaming endpoints that apply output review to assembled or final chunks instead of raw intermediate tokens.
 
