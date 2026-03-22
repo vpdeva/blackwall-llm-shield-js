@@ -199,6 +199,30 @@ function mapCompliance(ids = []) {
   return [...new Set(ids.flatMap((id) => COMPLIANCE_MAP[id] || []))];
 }
 
+function countFindingsByType(findings = []) {
+  return findings.reduce((acc, finding) => {
+    const key = finding && (finding.type || finding.id || finding.category || 'unknown');
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+}
+
+function summarizeSensitiveFindings(findings = []) {
+  return findings.reduce((acc, finding) => {
+    const key = finding && finding.type ? finding.type : 'unknown';
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+}
+
+function createTelemetryEvent(type, payload = {}) {
+  return {
+    type,
+    createdAt: new Date().toISOString(),
+    ...payload,
+  };
+}
+
 function cloneRegex(regex) {
   return new RegExp(regex.source, regex.flags);
 }
@@ -733,6 +757,7 @@ class BlackwallShield {
       tokenBudgetFirewall: null,
       systemPrompt: null,
       onAlert: null,
+      onTelemetry: null,
       webhookUrl: null,
       ...options,
     };
@@ -757,6 +782,12 @@ class BlackwallShield {
     }
     if (this.options.webhookUrl) {
       await defaultWebhookNotifier(alert, this.options.webhookUrl);
+    }
+  }
+
+  async emitTelemetry(event) {
+    if (typeof this.options.onTelemetry === 'function') {
+      await this.options.onTelemetry(event);
     }
   }
 
@@ -815,7 +846,24 @@ class BlackwallShield {
       policyPack: primaryPolicy ? primaryPolicy.name : null,
       policyComparisons,
       tokenBudget: budgetResult,
+      telemetry: {
+        eventType: 'llm_request_reviewed',
+        promptInjectionRuleHits: countFindingsByType(injection.matches),
+        maskedEntityCounts: summarizeSensitiveFindings(masked.findings),
+        promptTokenEstimate: budgetResult.estimatedTokens,
+        complianceMap: mapCompliance([
+          ...injection.matches.map((item) => item.id),
+          ...(budgetResult.allowed ? [] : ['token_budget_exceeded']),
+        ]),
+      },
     };
+
+    await this.emitTelemetry(createTelemetryEvent('llm_request_reviewed', {
+      metadata,
+      blocked: shouldBlock || !budgetResult.allowed,
+      shadowMode: this.options.shadowMode,
+      report,
+    }));
 
     if (shouldNotify || wouldBlock) {
       await this.notify({
@@ -834,6 +882,110 @@ class BlackwallShield {
       messages: masked.masked,
       report,
       vault: masked.vault,
+    };
+  }
+
+  async reviewModelResponse({ output, metadata = {}, outputFirewall = null, firewallOptions = {} } = {}) {
+    const primaryPolicy = resolvePolicyPack(this.options.policyPack);
+    const firewall = outputFirewall || new OutputFirewall({
+      riskThreshold: (primaryPolicy && primaryPolicy.outputRiskThreshold) || 'high',
+      systemPrompt: this.options.systemPrompt,
+      ...firewallOptions,
+    });
+    const review = firewall.inspect(output, {
+      systemPrompt: this.options.systemPrompt,
+      ...firewallOptions,
+    });
+    const report = {
+      package: 'blackwall-llm-shield-js',
+      createdAt: new Date().toISOString(),
+      metadata,
+      outputReview: {
+        ...review,
+        telemetry: {
+          eventType: 'llm_output_reviewed',
+          findingCounts: countFindingsByType(review.findings),
+          piiEntityCounts: summarizeSensitiveFindings(review.piiFindings),
+          complianceMap: mapCompliance(review.findings.map((item) => item.id)),
+        },
+      },
+    };
+
+    await this.emitTelemetry(createTelemetryEvent('llm_output_reviewed', {
+      metadata,
+      blocked: !review.allowed,
+      report,
+    }));
+
+    if (!review.allowed || compareRisk(review.severity, 'high')) {
+      await this.notify({
+        type: !review.allowed ? 'llm_output_blocked' : 'llm_output_risky',
+        severity: review.severity,
+        reason: !review.allowed ? 'Model output failed Blackwall review' : 'Model output triggered Blackwall findings',
+        report,
+      });
+    }
+
+    return {
+      ...review,
+      report,
+    };
+  }
+
+  async protectModelCall({
+    messages = [],
+    metadata = {},
+    allowSystemMessages = this.options.allowSystemMessages,
+    comparePolicyPacks = [],
+    callModel,
+    mapMessages = null,
+    mapOutput = null,
+    outputFirewall = null,
+    firewallOptions = {},
+  } = {}) {
+    if (typeof callModel !== 'function') {
+      throw new TypeError('callModel must be a function');
+    }
+    const request = await this.guardModelRequest({
+      messages,
+      metadata,
+      allowSystemMessages,
+      comparePolicyPacks,
+    });
+    if (!request.allowed) {
+      return {
+        allowed: false,
+        blocked: true,
+        stage: 'request',
+        reason: request.reason,
+        request,
+        response: null,
+        review: null,
+      };
+    }
+    const guardedMessages = typeof mapMessages === 'function'
+      ? await mapMessages(request.messages, request)
+      : request.messages;
+    const response = await callModel({
+      messages: guardedMessages,
+      metadata,
+      guard: request,
+    });
+    const output = typeof mapOutput === 'function' ? await mapOutput(response, request) : response;
+    const review = await this.reviewModelResponse({
+      output,
+      metadata,
+      outputFirewall,
+      firewallOptions,
+    });
+    return {
+      allowed: review.allowed,
+      blocked: !review.allowed,
+      stage: review.allowed ? 'complete' : 'output',
+      reason: review.allowed ? null : 'Model output failed Blackwall review',
+      request,
+      response,
+      review,
     };
   }
 }
@@ -1101,6 +1253,7 @@ class OutputFirewall {
       grounding,
       tone,
       cot,
+      complianceMap: mapCompliance(findings.map((item) => item.id)),
     };
   }
 }

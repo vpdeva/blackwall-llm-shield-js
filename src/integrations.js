@@ -35,7 +35,9 @@ class BlackwallLangChainCallback {
     const text = Array.isArray(generations) && generations[0] && generations[0][0]
       ? (generations[0][0].text || generations[0][0].message?.content || '')
       : '';
-    const review = this.outputFirewall.inspect(text);
+    const review = this.options.shield && typeof this.options.shield.reviewModelResponse === 'function'
+      ? await this.options.shield.reviewModelResponse({ output: text, outputFirewall: this.outputFirewall })
+      : this.outputFirewall.inspect(text);
     this.lastOutputReview = review;
     if (review && review.allowed === false) throw new Error('Blackwall blocked model output');
     return review;
@@ -62,7 +64,9 @@ class BlackwallLlamaIndexCallback {
     if (!this.outputFirewall || typeof this.outputFirewall.inspect !== 'function') return null;
     const payload = event && event.payload ? event.payload : {};
     const text = payload.response || payload.output || '';
-    const review = this.outputFirewall.inspect(text);
+    const review = this.options.shield && typeof this.options.shield.reviewModelResponse === 'function'
+      ? await this.options.shield.reviewModelResponse({ output: text, outputFirewall: this.outputFirewall })
+      : this.outputFirewall.inspect(text);
     this.lastOutputReview = review;
     if (review && review.allowed === false) throw new Error('Blackwall blocked model output');
     return review;

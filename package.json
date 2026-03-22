@@ -1,5 +1,5 @@
 {
-  "name": "blackwall-llm-shield-js",
+  "name": "@vpdeva/blackwall-llm-shield-js",
   "version": "0.1.0",
   "description": "Open-source JavaScript enterprise LLM protection toolkit for Node.js and Next.js",
   "license": "Apache-2.0",
@@ -12,7 +12,7 @@
     "./semantic": "./src/semantic.js"
   },
   "bin": {
-    "blackwall-scorecard": "./src/scorecard.js"
+    "blackwall-scorecard": "src/scorecard.js"
   },
   "scripts": {
     "test": "node --test tests/*.test.js"
@@ -28,11 +28,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/vishnud23/blackwall-llm-shield.git"
+    "url": "git+https://github.com/vppdeva/blackwall-llm-shield.git"
   },
   "homepage": "https://vish.au",
   "bugs": {
-    "url": "https://github.com/vishnud23/blackwall-llm-shield/issues"
+    "url": "https://github.com/vpdeva/blackwall-llm-shield/issues"
   },
   "funding": {
     "type": "Buy Vish a coffee",

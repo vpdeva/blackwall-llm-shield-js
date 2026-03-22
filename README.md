@@ -11,6 +11,7 @@ JavaScript security middleware for LLM applications in Node.js and Next.js. Blac
 - Blocks requests when risk exceeds policy thresholds
 - Supports shadow mode and side-by-side policy-pack evaluation
 - Notifies webhooks or alert handlers when risky traffic appears
+- Emits structured telemetry for prompt risk, masking volume, and output review outcomes
 - Inspects model outputs for leaks, unsafe code, grounding drift, and tone violations
 - Ships Express, LangChain, and LlamaIndex integration helpers
 - Enforces allowlists, denylists, validators, and approval-gated tools
@@ -21,7 +22,7 @@ JavaScript security middleware for LLM applications in Node.js and Next.js. Blac
 ## Install
 
 ```bash
-npm install blackwall-llm-shield-js
+npm install @vpdeva/blackwall-llm-shield-js
 npm install @xenova/transformers
 ```
 
@@ -91,6 +92,8 @@ Use `require('blackwall-llm-shield-js/integrations')` for callback wrappers and 
 
 Use it to sanitize inbound messages, mask sensitive data, score prompt-injection risk, and decide whether the request should continue to the model provider.
 
+It also exposes `protectModelCall()` and `reviewModelResponse()` so you can enforce request checks before OpenAI or Anthropic calls and review outputs before they go back to the user.
+
 ### `OutputFirewall`
 
 Use it after the model responds to catch leaked secrets, dangerous code patterns, and schema regressions before returning output to the user or agent runtime.
@@ -119,6 +122,32 @@ const guarded = await shield.guardModelRequest({
 if (!guarded.allowed) {
   return { status: 403, body: guarded.report };
 }
+```
+
+### Wrap a provider call end to end
+
+```js
+const shield = new BlackwallShield({
+  shadowMode: true,
+  onTelemetry: async (event) => console.log(JSON.stringify(event)),
+});
+
+const result = await shield.protectModelCall({
+  messages: [{ role: 'user', content: 'Summarize this shipment exception.' }],
+  metadata: { route: '/api/chat', tenantId: 'au-commerce', userId: 'ops-7' },
+  callModel: async ({ messages }) => openai.responses.create({
+    model: 'gpt-4.1-mini',
+    input: messages.map((msg) => `${msg.role}: ${msg.content}`).join('\n'),
+  }),
+  mapOutput: (response) => response.output_text,
+  firewallOptions: {
+    retrievalDocuments: [
+      { id: 'kb-1', content: 'Shipment exceptions should include the parcel ID, lane, and next action.' },
+    ],
+  },
+});
+
+console.log(result.stage, result.allowed);
 ```
 
 ### Inspect model output
@@ -156,12 +185,11 @@ console.log(tools.inspectCall({ tool: 'lookupCustomer', args: { id: 'cus_123' } 
 - [`examples/nextjs-app-router/app/api/chat/route.js`](/Users/vishnu/Documents/blackwall-llm-shield/blackwall-llm-shield-js/examples/nextjs-app-router/app/api/chat/route.js) shows guarded request handling in a Next.js route
 - [`examples/admin-dashboard/index.html`](/Users/vishnu/Documents/blackwall-llm-shield/blackwall-llm-shield-js/examples/admin-dashboard/index.html) shows a polished security command center demo
 
-## What Would Make This Production-Ready Even Faster
+## Rollout Notes
 
-- Provider adapters for OpenAI, Anthropic, and open-source model gateways
-- OpenTelemetry spans and structured logs
-- More benchmark data for latency and false-positive rates
-- More adversarial scenarios in the red-team suite
+- Start with `shadowMode: true` and inspect `report.telemetry` plus `onTelemetry` events before enabling hard blocking.
+- Use `RetrievalSanitizer` and `ToolPermissionFirewall` in front of RAG, search, admin actions, and tool-calling flows.
+- Add regression prompts for instruction overrides, prompt leaks, token leaks, and Australian PII samples so upgrades stay safe.
 
 ## Support
 
