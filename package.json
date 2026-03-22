@@ -1,6 +1,6 @@
 {
   "name": "@vpdeva/blackwall-llm-shield-js",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Open-source JavaScript enterprise LLM protection toolkit for Node.js and Next.js",
   "license": "Apache-2.0",
   "author": "Vish <hello@vish.au> (https://vish.au)",
