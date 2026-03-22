@@ -173,6 +173,41 @@ const SHIELD_PRESETS = {
     shadowMode: false,
     policyPack: 'finance',
   },
+  governmentStrict: {
+    blockOnPromptInjection: true,
+    promptInjectionThreshold: 'medium',
+    notifyOnRiskLevel: 'medium',
+    shadowMode: false,
+    policyPack: 'government',
+  },
+  bankingPayments: {
+    blockOnPromptInjection: true,
+    promptInjectionThreshold: 'medium',
+    notifyOnRiskLevel: 'medium',
+    shadowMode: false,
+    policyPack: 'finance',
+  },
+  documentIntake: {
+    blockOnPromptInjection: true,
+    promptInjectionThreshold: 'high',
+    notifyOnRiskLevel: 'medium',
+    shadowMode: true,
+    policyPack: 'government',
+  },
+  citizenServices: {
+    blockOnPromptInjection: true,
+    promptInjectionThreshold: 'medium',
+    notifyOnRiskLevel: 'medium',
+    shadowMode: true,
+    policyPack: 'government',
+  },
+  internalOpsAgent: {
+    blockOnPromptInjection: true,
+    promptInjectionThreshold: 'medium',
+    notifyOnRiskLevel: 'medium',
+    shadowMode: true,
+    policyPack: 'finance',
+  },
 };
 
 const CORE_INTERFACE_VERSION = '1.0';
@@ -447,6 +482,173 @@ class PowerBIExporter {
     });
     return records;
   }
+}
+
+class DataClassificationGate {
+  constructor(options = {}) {
+    this.defaultLevel = options.defaultLevel || 'internal';
+    this.providerAllowMap = options.providerAllowMap || {};
+    this.levelOrder = ['public', 'internal', 'confidential', 'restricted'];
+  }
+
+  classify({ metadata = {}, findings = [], messages = [] } = {}) {
+    if (metadata.classification) return metadata.classification;
+    const types = findings.map((item) => item.type).filter(Boolean);
+    if (types.some((type) => ['creditCard', 'tfn', 'passport', 'license', 'apiKey', 'jwt', 'bearerToken'].includes(type))) return 'restricted';
+    if (types.length) return 'confidential';
+    const text = JSON.stringify(messages || []).toLowerCase();
+    if (/\bconfidential|restricted|secret\b/.test(text)) return 'confidential';
+    return this.defaultLevel;
+  }
+
+  inspect({ metadata = {}, findings = [], messages = [], provider = null } = {}) {
+    const classification = this.classify({ metadata, findings, messages });
+    const allowedProviders = this.providerAllowMap[classification] || null;
+    const allowed = !provider || !allowedProviders || allowedProviders.includes(provider);
+    return {
+      allowed,
+      classification,
+      provider,
+      allowedProviders,
+      reason: allowed ? null : `Provider ${provider} is not allowed for ${classification} data`,
+    };
+  }
+}
+
+class ProviderRoutingPolicy {
+  constructor(options = {}) {
+    this.routes = options.routes || {};
+    this.fallbackProvider = options.fallbackProvider || null;
+  }
+
+  choose({ route = '', classification = 'internal', requestedProvider = null, candidates = [] } = {}) {
+    const routeConfig = this.routes[route] || this.routes.default || {};
+    const preferred = routeConfig[classification] || routeConfig.default || requestedProvider || this.fallbackProvider || candidates[0] || null;
+    const allowedCandidates = candidates.length ? candidates : [preferred].filter(Boolean);
+    const chosen = allowedCandidates.includes(preferred) ? preferred : allowedCandidates[0] || null;
+    return { provider: chosen, route, classification, requestedProvider, candidates: allowedCandidates };
+  }
+}
+
+class ApprovalInboxModel {
+  constructor(options = {}) {
+    this.requests = [];
+    this.requiredApprovers = options.requiredApprovers || 1;
+  }
+
+  createRequest(request = {}) {
+    const id = request.id || `apr_${crypto.randomBytes(6).toString('hex')}`;
+    const record = {
+      id,
+      status: 'pending',
+      requiredApprovers: request.requiredApprovers || this.requiredApprovers,
+      approvals: [],
+      createdAt: new Date().toISOString(),
+      ...request,
+    };
+    this.requests.push(record);
+    return record;
+  }
+
+  approve(id, approver) {
+    const request = this.requests.find((item) => item.id === id);
+    if (!request) return null;
+    if (!request.approvals.includes(approver)) request.approvals.push(approver);
+    request.status = request.approvals.length >= request.requiredApprovers ? 'approved' : 'pending';
+    return request;
+  }
+
+  summarize() {
+    return {
+      total: this.requests.length,
+      pending: this.requests.filter((item) => item.status === 'pending').length,
+      approved: this.requests.filter((item) => item.status === 'approved').length,
+    };
+  }
+}
+
+function buildComplianceEventBundle(event = {}) {
+  const payload = JSON.stringify(event);
+  const evidenceHash = crypto.createHash('sha256').update(payload).digest('hex');
+  return {
+    schemaVersion: '1.0',
+    generatedAt: new Date().toISOString(),
+    evidenceHash,
+    event,
+  };
+}
+
+function sanitizeAuditEvent(event = {}, options = {}) {
+  const keepEvidence = !!options.keepEvidence;
+  const clone = JSON.parse(JSON.stringify(event || {}));
+  if (!keepEvidence && clone.report && clone.report.sensitiveData) {
+    clone.report.sensitiveData.findings = (clone.report.sensitiveData.findings || []).map((finding) => ({ type: finding.type }));
+  }
+  return clone;
+}
+
+class RetrievalTrustScorer {
+  score(documents = []) {
+    return (documents || []).map((doc, index) => {
+      const metadata = doc && doc.metadata ? doc.metadata : {};
+      const sourceTrust = metadata.approved ? 0.4 : 0.1;
+      const freshness = metadata.fresh ? 0.3 : 0.1;
+      const origin = metadata.origin === 'trusted' ? 0.3 : 0.1;
+      const score = Number(Math.min(1, sourceTrust + freshness + origin).toFixed(2));
+      return {
+        id: doc && doc.id ? doc.id : `doc_${index + 1}`,
+        trustScore: score,
+        trusted: score >= 0.7,
+        metadata,
+      };
+    });
+  }
+}
+
+class OutboundCommunicationGuard {
+  constructor(options = {}) {
+    this.outputFirewall = options.outputFirewall || new OutputFirewall({ riskThreshold: 'high', enforceProfessionalTone: true });
+  }
+
+  inspect({ message, metadata = {} } = {}) {
+    const review = this.outputFirewall.inspect(message, {});
+    return {
+      allowed: review.allowed,
+      review,
+      channel: metadata.channel || 'outbound',
+      recipient: metadata.recipient || null,
+    };
+  }
+}
+
+class UploadQuarantineWorkflow {
+  constructor(options = {}) {
+    this.shield = options.shield || new BlackwallShield({ preset: 'documentIntake' });
+    this.inbox = options.approvalInbox || new ApprovalInboxModel({ requiredApprovers: 1 });
+  }
+
+  async inspectUpload({ content, metadata = {} } = {}) {
+    const guarded = await this.shield.guardModelRequest({
+      messages: [{ role: 'user', content }],
+      metadata: { ...metadata, feature: metadata.feature || 'upload_intake' },
+    });
+    const quarantined = !guarded.allowed || guarded.report.sensitiveData.hasSensitiveData;
+    const approvalRequest = quarantined ? this.inbox.createRequest({ route: metadata.route || '/uploads', reason: guarded.reason || 'Upload requires review', metadata }) : null;
+    return { quarantined, approvalRequest, guard: guarded };
+  }
+}
+
+function detectOperationalDrift(previousSummary = {}, currentSummary = {}) {
+  const previousBlocked = previousSummary.weeklyBlockEstimate || 0;
+  const currentBlocked = currentSummary.weeklyBlockEstimate || 0;
+  const delta = currentBlocked - previousBlocked;
+  return {
+    driftDetected: Math.abs(delta) > 0,
+    blockedDelta: delta,
+    previousBlocked,
+    currentBlocked,
+    severity: delta > 10 ? 'high' : delta > 0 ? 'medium' : 'low',
+  };
 }
 
 function summarizeOperationalTelemetry(events = []) {
@@ -1719,6 +1921,25 @@ class AgentIdentityRegistry {
       blackwallProtected: !!unsigned.blackwallProtected,
     };
   }
+
+  issuePassportToken(agentId, options = {}) {
+    const passport = this.issueSignedPassport(agentId, options);
+    const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
+    const payload = Buffer.from(JSON.stringify(passport)).toString('base64url');
+    const signature = crypto.createHmac('sha256', this.secret).update(`${header}.${payload}`).digest('base64url');
+    return `${header}.${payload}.${signature}`;
+  }
+
+  verifyPassportToken(token) {
+    if (!token || typeof token !== 'string' || token.split('.').length !== 3) {
+      return { valid: false, reason: 'Malformed passport token' };
+    }
+    const [header, payload, signature] = token.split('.');
+    const expected = crypto.createHmac('sha256', this.secret).update(`${header}.${payload}`).digest('base64url');
+    if (signature !== expected) return { valid: false, reason: 'Invalid passport token signature' };
+    const passport = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    return { valid: true, passport, ...this.verifySignedPassport(passport) };
+  }
 }
 
 class ValueAtRiskCircuitBreaker {
@@ -1727,6 +1948,7 @@ class ValueAtRiskCircuitBreaker {
     this.windowMs = options.windowMs || (60 * 60 * 1000);
     this.revocationMs = options.revocationMs || (30 * 60 * 1000);
     this.valueExtractor = options.valueExtractor || ((args = {}, context = {}) => Number(context.actionValue != null ? context.actionValue : (args.amount != null ? args.amount : 0)));
+    this.toolSchemas = options.toolSchemas || [];
     this.entries = [];
     this.revocations = new Map();
   }
@@ -1754,7 +1976,10 @@ class ValueAtRiskCircuitBreaker {
       };
     }
     this.entries = this.entries.filter((entry) => (now - entry.at) <= this.windowMs);
-    const actionValue = Math.max(0, Number(this.valueExtractor(args, context) || 0));
+    const schema = this.toolSchemas.find((item) => item && item.name === tool) || {};
+    const field = schema.monetaryValueField || schema.valueField || null;
+    const schemaValue = field ? Number(args && args[field]) : 0;
+    const actionValue = Math.max(0, Number((schemaValue || this.valueExtractor(args, context)) || 0));
     const key = sessionId || context.agentId || context.agent_id || context.userId || context.user_id || 'default';
     const relevant = this.entries.filter((entry) => entry.key === key);
     const riskWindowValue = relevant.reduce((sum, entry) => sum + entry.value, 0) + actionValue;
@@ -1809,6 +2034,40 @@ class ShadowConsensusAuditor {
   }
 }
 
+class CrossModelConsensusWrapper {
+  constructor(options = {}) {
+    this.primaryAdapter = options.primaryAdapter || null;
+    this.auditorAdapter = options.auditorAdapter || null;
+    this.decisionParser = options.decisionParser || ((output) => {
+      const text = typeof output === 'string' ? output : JSON.stringify(output || '');
+      if (/\b(block|unsafe|deny|disagree)\b/i.test(text)) return 'block';
+      return 'allow';
+    });
+  }
+
+  async evaluate({ messages = [], metadata = {}, primaryResult = null } = {}) {
+    if (!this.auditorAdapter || typeof this.auditorAdapter.invoke !== 'function') {
+      return { agreed: true, disagreement: false, reason: null, primaryDecision: 'allow', auditorDecision: 'allow' };
+    }
+    const primaryDecision = primaryResult && primaryResult.blocked ? 'block' : 'allow';
+    const response = await this.auditorAdapter.invoke({ messages, metadata, primaryResult });
+    const output = typeof this.auditorAdapter.extractOutput === 'function'
+      ? this.auditorAdapter.extractOutput(response && Object.prototype.hasOwnProperty.call(response, 'response') ? response.response : response)
+      : (response && response.output) || response;
+    const auditorDecision = this.decisionParser(output);
+    const disagreement = auditorDecision !== primaryDecision;
+    return {
+      agreed: !disagreement,
+      disagreement,
+      primaryDecision,
+      auditorDecision,
+      reason: disagreement ? 'Logic Conflict: cross-model auditor disagreed with the primary decision' : null,
+      auditorResponse: response,
+      auditorOutput: output,
+    };
+  }
+}
+
 class DigitalTwinOrchestrator {
   constructor(options = {}) {
     this.toolSchemas = options.toolSchemas || [];
@@ -1833,6 +2092,13 @@ class DigitalTwinOrchestrator {
       },
       invocations: this.invocations,
     };
+  }
+
+  static fromToolPermissionFirewall(firewall) {
+    const schemas = Array.isArray(firewall && firewall.options && firewall.options.toolSchemas)
+      ? firewall.options.toolSchemas
+      : [];
+    return new DigitalTwinOrchestrator({ toolSchemas: schemas });
   }
 }
 
@@ -1859,6 +2125,21 @@ function suggestPolicyOverride({ route = null, approval = null, guardResult = nu
     };
   }
   return null;
+}
+
+class PolicyLearningLoop {
+  constructor() {
+    this.decisions = [];
+  }
+
+  recordDecision(input = {}) {
+    this.decisions.push({ ...input, recordedAt: new Date().toISOString() });
+    return suggestPolicyOverride(input);
+  }
+
+  suggestOverrides() {
+    return this.decisions.map((entry) => suggestPolicyOverride(entry)).filter(Boolean);
+  }
 }
 
 class AgenticCapabilityGater {
@@ -1999,10 +2280,12 @@ class ToolPermissionFirewall {
       allowedTools: [],
       blockedTools: [],
       validators: {},
+      toolSchemas: [],
       requireHumanApprovalFor: [],
       capabilityGater: null,
       valueAtRiskCircuitBreaker: null,
       consensusAuditor: null,
+      crossModelConsensus: null,
       consensusRequiredFor: [],
       onApprovalRequest: null,
       approvalWebhookUrl: null,
@@ -2064,6 +2347,15 @@ class ToolPermissionFirewall {
         };
       }
     }
+    if (this.options.crossModelConsensus && (context.highImpact || this.options.consensusRequiredFor.includes(tool))) {
+      return {
+        allowed: false,
+        reason: 'Cross-model consensus requires async inspection',
+        requiresApproval: true,
+        requiresAsyncConsensus: true,
+        approvalRequest: { tool, args, context },
+      };
+    }
     const requiresApproval = this.options.requireHumanApprovalFor.includes(tool);
     return {
       allowed: !requiresApproval,
@@ -2075,6 +2367,24 @@ class ToolPermissionFirewall {
 
   async inspectCallAsync(input = {}) {
     const result = this.inspectCall(input);
+    if (result.requiresAsyncConsensus && this.options.crossModelConsensus) {
+      const consensus = await this.options.crossModelConsensus.evaluate({
+        messages: input.context && input.context.consensusMessages ? input.context.consensusMessages : [{ role: 'user', content: JSON.stringify({ tool: input.tool, args: input.args, context: input.context }) }],
+        metadata: input.context || {},
+        primaryResult: result,
+      });
+      if (consensus.disagreement) {
+        return {
+          allowed: false,
+          reason: consensus.reason,
+          requiresApproval: true,
+          logicConflict: true,
+          consensus,
+          approvalRequest: { tool: input.tool, args: input.args || {}, context: input.context || {}, consensus },
+        };
+      }
+      return { allowed: true, reason: null, requiresApproval: false, consensus };
+    }
     if (result.requiresApproval) {
       if (typeof this.options.onApprovalRequest === 'function') {
         await this.options.onApprovalRequest(result.approvalRequest);
@@ -2431,12 +2741,14 @@ module.exports = {
   AuditTrail,
   BlackwallShield,
   CoTScanner,
+  CrossModelConsensusWrapper,
   DigitalTwinOrchestrator,
   ImageMetadataScanner,
   LightweightIntentScorer,
   MCPSecurityProxy,
   OutputFirewall,
   PowerBIExporter,
+  PolicyLearningLoop,
   RetrievalSanitizer,
   SessionBuffer,
   ShadowConsensusAuditor,
@@ -2476,6 +2788,15 @@ module.exports = {
   normalizeIdentityMetadata,
   buildEnterpriseTelemetryEvent,
   buildPowerBIRecord,
+  buildComplianceEventBundle,
+  sanitizeAuditEvent,
+  detectOperationalDrift,
+  DataClassificationGate,
+  ProviderRoutingPolicy,
+  ApprovalInboxModel,
+  RetrievalTrustScorer,
+  OutboundCommunicationGuard,
+  UploadQuarantineWorkflow,
   parseJsonOutput,
   createOpenAIAdapter,
   createAnthropicAdapter,

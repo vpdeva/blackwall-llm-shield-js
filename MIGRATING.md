@@ -2,7 +2,7 @@
 
 ## Stable Contracts
 
-The following APIs are intended to be the long-term integration surface for the 0.1.x line:
+The following APIs are intended to be the long-term integration surface for the 0.2.x line:
 
 - `guardModelRequest()`
 - `reviewModelResponse()`

@@ -92,9 +92,53 @@ export class ShadowConsensusAuditor {
   inspect(input?: Record<string, unknown>): Record<string, unknown>;
 }
 
+export class CrossModelConsensusWrapper {
+  constructor(options?: Record<string, unknown>);
+  evaluate(input?: Record<string, unknown>): Promise<Record<string, unknown>> | Record<string, unknown>;
+}
+
 export class DigitalTwinOrchestrator {
   constructor(options?: Record<string, unknown>);
   generate(): Record<string, unknown>;
+  static fromToolPermissionFirewall(firewall: unknown): DigitalTwinOrchestrator;
+}
+
+export class DataClassificationGate {
+  constructor(options?: Record<string, unknown>);
+  classify(input?: Record<string, unknown>): string;
+  inspect(input?: Record<string, unknown>): Record<string, unknown>;
+}
+
+export class ProviderRoutingPolicy {
+  constructor(options?: Record<string, unknown>);
+  choose(input?: Record<string, unknown>): Record<string, unknown>;
+}
+
+export class ApprovalInboxModel {
+  constructor(options?: Record<string, unknown>);
+  createRequest(input?: Record<string, unknown>): Record<string, unknown>;
+  approve(id: string, approver: string): Record<string, unknown> | null;
+  summarize(): Record<string, unknown>;
+}
+
+export class RetrievalTrustScorer {
+  score(documents?: Array<Record<string, unknown>>): Array<Record<string, unknown>>;
+}
+
+export class OutboundCommunicationGuard {
+  constructor(options?: Record<string, unknown>);
+  inspect(input?: Record<string, unknown>): Record<string, unknown>;
+}
+
+export class UploadQuarantineWorkflow {
+  constructor(options?: Record<string, unknown>);
+  inspectUpload(input?: Record<string, unknown>): Promise<Record<string, unknown>>;
+}
+
+export class PolicyLearningLoop {
+  constructor();
+  recordDecision(input?: Record<string, unknown>): Record<string, unknown> | null;
+  suggestOverrides(): Array<Record<string, unknown>>;
 }
 
 export class RetrievalSanitizer {
@@ -118,6 +162,9 @@ export function parseJsonOutput(output: unknown): unknown;
 export function normalizeIdentityMetadata(metadata?: Record<string, unknown>, resolver?: ((metadata: Record<string, unknown>) => Record<string, unknown> | null) | null): Record<string, unknown>;
 export function buildEnterpriseTelemetryEvent(event?: Record<string, unknown>, resolver?: ((metadata: Record<string, unknown>) => Record<string, unknown> | null) | null): Record<string, unknown>;
 export function buildPowerBIRecord(event?: Record<string, unknown>): Record<string, unknown>;
+export function buildComplianceEventBundle(event?: Record<string, unknown>): Record<string, unknown>;
+export function sanitizeAuditEvent(event?: Record<string, unknown>, options?: Record<string, unknown>): Record<string, unknown>;
+export function detectOperationalDrift(previousSummary?: Record<string, unknown>, currentSummary?: Record<string, unknown>): Record<string, unknown>;
 export function suggestPolicyOverride(input?: Record<string, unknown>): Record<string, unknown> | null;
 export class PowerBIExporter {
   constructor(options?: Record<string, unknown>);

@@ -26,8 +26,9 @@ JavaScript security middleware for LLM applications in Node.js and Next.js. Blac
 
 ```bash
 npm install @vpdeva/blackwall-llm-shield-js
-npm install @xenova/transformers
 ```
+
+The package now ships with local Transformers support wired as a first-class dependency, so teams do not need a second install step just to enable semantic scoring.
 
 ## Fast Start
 
@@ -129,7 +130,7 @@ Use it before injecting retrieved documents into context so hostile instructions
 
 ### Contract Stability
 
-The 0.1.x line treats `guardModelRequest()`, `protectWithAdapter()`, `reviewModelResponse()`, `ToolPermissionFirewall`, and `RetrievalSanitizer` as the long-term integration contracts. The exported `CORE_INTERFACES` map can be logged or asserted by applications that want to pin expected behavior.
+The 0.2.x line treats `guardModelRequest()`, `protectWithAdapter()`, `reviewModelResponse()`, `ToolPermissionFirewall`, and `RetrievalSanitizer` as the long-term integration contracts. The exported `CORE_INTERFACES` map can be logged or asserted by applications that want to pin expected behavior.
 
 Recommended presets:
 
@@ -141,6 +142,22 @@ Recommended presets:
 - `documentReview` for classification and document-review pipelines
 - `ragSearch` for search-heavy retrieval endpoints
 - `toolCalling` for routes that broker external actions
+- `governmentStrict` for highly regulated public-sector and records-sensitive workflows
+- `bankingPayments` for high-value payment and financial action routes
+- `documentIntake` for upload-heavy intake and review flows
+- `citizenServices` for identity-aware service delivery workflows
+- `internalOpsAgent` for internal operational assistants with shadow-first defaults
+
+### Global Governance Pack
+
+The 0.2.2 line also adds globally applicable enterprise controls that are useful across regulated industries, not just one country or sector:
+
+- `DataClassificationGate` to classify traffic as `public`, `internal`, `confidential`, or `restricted`
+- `ProviderRoutingPolicy` to keep sensitive classes on approved providers
+- `ApprovalInboxModel` and `UploadQuarantineWorkflow` for quarantine and review-first intake
+- `buildComplianceEventBundle()` and `sanitizeAuditEvent()` for audit-safe event export
+- `RetrievalTrustScorer` and `OutboundCommunicationGuard` for retrieval trust and outbound checks
+- `detectOperationalDrift()` for release-over-release noise monitoring
 
 ### `AuditTrail`
 
@@ -150,9 +167,10 @@ Use it to record signed events, summarize security activity, and power dashboard
 
 - `ValueAtRiskCircuitBreaker` for financial or high-value operational actions
 - `ShadowConsensusAuditor` for second-model or secondary-review logic conflict checks
+- `CrossModelConsensusWrapper` for automatic cross-model verification of high-impact actions
 - `DigitalTwinOrchestrator` for mock tool environments and sandbox simulations
-- `suggestPolicyOverride()` for narrow false-positive tuning suggestions after HITL approvals
-- `AgentIdentityRegistry.issueSignedPassport()` for signed agent identity exchange
+- `PolicyLearningLoop` plus `suggestPolicyOverride()` for narrow false-positive tuning suggestions after HITL approvals
+- `AgentIdentityRegistry.issueSignedPassport()` and `issuePassportToken()` for signed agent identity exchange
 
 ## Example Workflows
 
@@ -243,6 +261,20 @@ const firewall = new ToolPermissionFirewall({
 });
 ```
 
+### Add automatic cross-model consensus
+
+```js
+const consensus = new CrossModelConsensusWrapper({
+  auditorAdapter: geminiAuditorAdapter,
+});
+
+const firewall = new ToolPermissionFirewall({
+  allowedTools: ['issueRefund'],
+  crossModelConsensus: consensus,
+  consensusRequiredFor: ['issueRefund'],
+});
+```
+
 ### Generate a digital twin for sandbox testing
 
 ```js
@@ -254,6 +286,8 @@ const twin = new DigitalTwinOrchestrator({
 
 await twin.simulateCall('lookupOrder', { orderId: 'ord_1' });
 ```
+
+You can also derive a digital twin from `ToolPermissionFirewall` tool schemas with `DigitalTwinOrchestrator.fromToolPermissionFirewall(firewall)`.
 
 ### Protect a strict JSON workflow
 
