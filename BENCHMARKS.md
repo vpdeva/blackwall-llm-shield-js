@@ -14,6 +14,12 @@ These numbers are for short text-only prompts and responses. Real latency will i
 - named-entity detection
 - larger multimodal message payloads
 
+Latency budgeting tips:
+
+- measure text-only chat routes separately from multimodal or document-review routes
+- compare shadow-mode telemetry volume before and after enabling new route presets
+- track release-over-release noise changes on the same route set before widening enforcement
+
 ## False-positive Rollout Guidance
 
 Recommended rollout order:

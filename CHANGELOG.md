@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.8
+
+- Expanded enterprise rollout guidance for controlled pilots, internal shield wrappers, and false-positive tuning
+- Added clearer Next.js App Router and Gemini adoption guidance in the main docs
+- Improved telemetry and benchmarking docs to focus on route-level operator reporting and release-noise review
+
 ## 0.1.7
 
 - Added workflow-specific presets for planner, document-review, RAG-search, and tool-calling routes

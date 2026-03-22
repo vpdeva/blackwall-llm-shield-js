@@ -81,6 +81,10 @@ Use `shadowMode` with `shadowPolicyPacks` or `comparePolicyPacks` to record what
 
 Use `createOpenAIAdapter()`, `createAnthropicAdapter()`, `createGeminiAdapter()`, or `createOpenRouterAdapter()` with `protectWithAdapter()` when you want Blackwall to wrap the provider call end to end.
 
+### Controlled-pilot rollout
+
+The current recommendation for enterprise teams is a controlled pilot first: start in shadow mode, aggregate route-level telemetry, tune suppressions explicitly, then promote the cleanest routes to enforcement.
+
 ### Observability and control-plane support
 
 Use `summarizeOperationalTelemetry()` with emitted telemetry events when you want route-level summaries, blocked-event counts, and rollout visibility for operators.
@@ -181,6 +185,22 @@ const result = await shield.protectWithAdapter({
 console.log(result.stage, result.allowed);
 ```
 
+### Wrap Blackwall behind your own app adapter
+
+```js
+function createModelShield(shield) {
+  return {
+    async run({ messages, metadata, callProvider }) {
+      return shield.protectModelCall({
+        messages,
+        metadata,
+        callModel: callProvider,
+      });
+    },
+  };
+}
+```
+
 ### Protect a strict JSON workflow
 
 ```js
@@ -217,6 +237,18 @@ const shield = new BlackwallShield({
   ],
 });
 ```
+
+### Next.js App Router plus Gemini pattern
+
+For App Router route handlers, the cleanest production shape is:
+
+- parse the request in `app/api/.../route.ts`
+- use `preset: 'shadowFirst'` or a route-specific preset like `agentPlanner` or `documentReview`
+- attach `route`, `feature`, and `tenantId` metadata
+- wrap the Gemini SDK call with `createGeminiAdapter()` plus `protectWithAdapter()`
+- ship `report.telemetry` and `onTelemetry` into a route-level log sink
+
+That keeps request guarding, output review, and operator reporting in one path without scattering policy logic across the route.
 
 ### Route and domain examples
 
@@ -273,6 +305,13 @@ const shield = new BlackwallShield({
 - Full provider wrapper: `protectWithAdapter()`
 - Tool firewall + RAG sanitizer: `ToolPermissionFirewall` + `RetrievalSanitizer`
 
+### False-positive tuning
+
+- Start with route-level `shadowMode: true`
+- Add `suppressPromptRules` only per route, not globally, so the reason for each suppression stays obvious
+- Log `report.promptInjection.matches` and `report.telemetry.promptInjectionRuleHits` to explain why a request was flagged
+- Review `summary.noisiestRoutes`, `summary.byFeature`, and `summary.weeklyBlockEstimate` before raising enforcement
+
 ### Operational telemetry summaries
 
 ```js
@@ -327,6 +366,12 @@ console.log(tools.inspectCall({ tool: 'lookupCustomer', args: { id: 'cus_123' } 
 For Next.js, the most production-real patterns are App Router route handlers, server actions for trusted internal mutations, and streaming endpoints that apply output review to assembled or final chunks instead of raw intermediate tokens.
 
 For Gemini-heavy apps, the bundled adapter now preserves system instructions plus mixed text/image/file parts so App Router handlers can wrap direct `@google/generative-ai` calls with less translation glue.
+
+## Enterprise Adoption Notes
+
+- A controlled pilot is a good fit today when you want shadow-mode prompt and output protection without forcing hard blocking on every route immediately.
+- If you prefer not to depend on Blackwall directly everywhere, wrap it behind your own internal model-security abstraction and expose only the contract your app teams need.
+- For broader approval, focus rollout reviews on false-positive rates, noisiest routes, and latency budgets alongside jailbreak coverage.
 
 ## Release Commands
 
