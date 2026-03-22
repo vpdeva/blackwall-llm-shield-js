@@ -133,6 +133,18 @@ const SHIELD_PRESETS = {
     shadowMode: true,
     allowSystemMessages: true,
   },
+  ragSafe: {
+    blockOnPromptInjection: true,
+    promptInjectionThreshold: 'medium',
+    notifyOnRiskLevel: 'medium',
+    shadowMode: true,
+  },
+  agentTools: {
+    blockOnPromptInjection: true,
+    promptInjectionThreshold: 'medium',
+    notifyOnRiskLevel: 'medium',
+    shadowMode: false,
+  },
 };
 
 const CORE_INTERFACE_VERSION = '1.0';
@@ -209,6 +221,70 @@ function sanitizeText(input, maxLength = 5000) {
     .slice(0, maxLength);
 }
 
+function stringifyMessageContent(content, maxLength = 5000) {
+  if (typeof content === 'string') return sanitizeText(content, maxLength);
+  if (Array.isArray(content)) {
+    return content
+      .map((item) => {
+        if (typeof item === 'string') return sanitizeText(item, maxLength);
+        if (item && typeof item.text === 'string') return sanitizeText(item.text, maxLength);
+        if (item && item.type === 'text' && typeof item.text === 'string') return sanitizeText(item.text, maxLength);
+        if (item && item.type === 'input_text' && typeof item.text === 'string') return sanitizeText(item.text, maxLength);
+        if (item && item.type === 'image_url') return '[IMAGE_CONTENT]';
+        if (item && item.type === 'file') return '[FILE_CONTENT]';
+        return '';
+      })
+      .filter(Boolean)
+      .join('\n');
+  }
+  if (content && typeof content === 'object') {
+    if (typeof content.text === 'string') return sanitizeText(content.text, maxLength);
+    if (Array.isArray(content.parts)) return stringifyMessageContent(content.parts, maxLength);
+    return sanitizeText(JSON.stringify(content), maxLength);
+  }
+  return sanitizeText(String(content || ''), maxLength);
+}
+
+function normalizeContentParts(content, maxLength = 5000) {
+  if (typeof content === 'string') {
+    return [{ type: 'text', text: sanitizeText(content, maxLength) }].filter((item) => item.text);
+  }
+  if (Array.isArray(content)) {
+    return content.map((item) => {
+      if (typeof item === 'string') return { type: 'text', text: sanitizeText(item, maxLength) };
+      if (!item || typeof item !== 'object') return null;
+      if ((item.type === 'text' || item.type === 'input_text') && typeof item.text === 'string') {
+        return { ...item, text: sanitizeText(item.text, maxLength) };
+      }
+      return { ...item };
+    }).filter(Boolean);
+  }
+  if (content && typeof content === 'object') {
+    if (Array.isArray(content.parts)) return normalizeContentParts(content.parts, maxLength);
+    if (typeof content.text === 'string') return [{ ...content, text: sanitizeText(content.text, maxLength) }];
+    return [{ type: 'json', value: sanitizeText(JSON.stringify(content), maxLength) }];
+  }
+  return [];
+}
+
+function maskContentParts(parts = [], options = {}) {
+  const findings = [];
+  const vault = {};
+  const maskedParts = parts.map((part) => {
+    if (!part || typeof part !== 'object') return part;
+    const textValue = typeof part.text === 'string'
+      ? part.text
+      : (part.type === 'json' && typeof part.value === 'string' ? part.value : null);
+    if (textValue == null) return { ...part };
+    const result = maskValue(textValue, options);
+    findings.push(...result.findings);
+    Object.assign(vault, result.vault);
+    if (typeof part.text === 'string') return { ...part, text: result.masked };
+    return { ...part, value: result.masked };
+  });
+  return { maskedParts, findings, vault };
+}
+
 function placeholder(type, index) {
   return `[${String(type || 'SENSITIVE').toUpperCase()}_${index}]`;
 }
@@ -265,6 +341,31 @@ function createTelemetryEvent(type, payload = {}) {
     createdAt: new Date().toISOString(),
     ...payload,
   };
+}
+
+function summarizeOperationalTelemetry(events = []) {
+  const summary = {
+    totalEvents: 0,
+    blockedEvents: 0,
+    shadowModeEvents: 0,
+    byType: {},
+    byRoute: {},
+    highestSeverity: 'low',
+  };
+  for (const event of Array.isArray(events) ? events : []) {
+    const type = event && event.type ? event.type : 'unknown';
+    const route = event && event.metadata && (event.metadata.route || event.metadata.path) ? (event.metadata.route || event.metadata.path) : 'unknown';
+    const severity = event && event.report && event.report.outputReview
+      ? event.report.outputReview.severity
+      : (event && event.report && event.report.promptInjection ? event.report.promptInjection.level : 'low');
+    summary.totalEvents += 1;
+    summary.byType[type] = (summary.byType[type] || 0) + 1;
+    summary.byRoute[route] = (summary.byRoute[route] || 0) + 1;
+    if (event && event.blocked) summary.blockedEvents += 1;
+    if (event && event.shadowMode) summary.shadowModeEvents += 1;
+    if (severityWeight(severity) > severityWeight(summary.highestSeverity)) summary.highestSeverity = severity;
+  }
+  return summary;
 }
 
 function resolveShieldPreset(name) {
@@ -742,11 +843,14 @@ function normalizeMessages(messages = [], options = {}) {
   return (Array.isArray(messages) ? messages : [])
     .slice(-maxMessages)
     .map((message) => {
-      const content = sanitizeText(String(message && message.content ? message.content : ''));
+      const originalContent = message && Object.prototype.hasOwnProperty.call(message, 'content') ? message.content : '';
+      const parts = typeof originalContent === 'string' ? [] : normalizeContentParts(originalContent, options.maxLength || 5000);
+      const content = stringifyMessageContent(originalContent, options.maxLength || 5000);
       if (!content) return null;
       return {
         role: normalizeRole(message.role, allowSystemMessages, !!message.trusted),
         content,
+        contentParts: parts.length ? parts : undefined,
       };
     })
     .filter(Boolean);
@@ -757,16 +861,25 @@ function maskMessages(messages = [], options = {}) {
   const vault = {};
   const masked = (Array.isArray(messages) ? messages : []).map((message) => {
     if (!message || typeof message !== 'object') return null;
+    const normalizedParts = Array.isArray(message.contentParts)
+      ? message.contentParts
+      : (typeof message.content === 'string' ? [] : normalizeContentParts(message.content || '', options.maxLength || 5000));
     const normalized = {
       role: message.role === 'system' ? 'system' : normalizeRole(message.role, false, false),
-      content: sanitizeText(String(message.content || ''), options.maxLength || 5000),
+      content: stringifyMessageContent(message.content || '', options.maxLength || 5000),
+      contentParts: normalizedParts.length ? normalizedParts : undefined,
     };
     if (!normalized.content) return null;
     if (normalized.role === 'system') return normalized;
     const result = maskValue(normalized.content, options);
-    findings.push(...result.findings);
-    Object.assign(vault, result.vault);
-    return { ...normalized, content: result.masked };
+    const partsResult = maskContentParts(normalized.contentParts || [], options);
+    findings.push(...result.findings, ...partsResult.findings);
+    Object.assign(vault, result.vault, partsResult.vault);
+    return {
+      ...normalized,
+      content: result.masked,
+      contentParts: partsResult.maskedParts.length ? partsResult.maskedParts : undefined,
+    };
   }).filter(Boolean);
 
   return {
@@ -1921,6 +2034,7 @@ module.exports = {
   getRedTeamPromptLibrary,
   runRedTeamSuite,
   buildShieldOptions,
+  summarizeOperationalTelemetry,
   createOpenAIAdapter,
   createAnthropicAdapter,
   createGeminiAdapter,

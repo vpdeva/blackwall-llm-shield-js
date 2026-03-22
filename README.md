@@ -14,6 +14,8 @@ JavaScript security middleware for LLM applications in Node.js and Next.js. Blac
 - Emits structured telemetry for prompt risk, masking volume, and output review outcomes
 - Includes first-class provider adapters for OpenAI, Anthropic, Gemini, and OpenRouter
 - Inspects model outputs for leaks, unsafe code, grounding drift, and tone violations
+- Handles mixed text, image, and file message parts more gracefully in text-first multimodal flows
+- Adds operator-friendly telemetry summaries and stronger presets for RAG and agent-tool workflows
 - Ships Express, LangChain, and LlamaIndex integration helpers
 - Enforces allowlists, denylists, validators, and approval-gated tools
 - Sanitizes RAG documents before they are injected into context
@@ -79,6 +81,10 @@ Use `shadowMode` with `shadowPolicyPacks` or `comparePolicyPacks` to record what
 
 Use `createOpenAIAdapter()`, `createAnthropicAdapter()`, `createGeminiAdapter()`, or `createOpenRouterAdapter()` with `protectWithAdapter()` when you want Blackwall to wrap the provider call end to end.
 
+### Observability and control-plane support
+
+Use `summarizeOperationalTelemetry()` with emitted telemetry events when you want route-level summaries, blocked-event counts, and rollout visibility for operators.
+
 ### Output grounding and tone review
 
 `OutputFirewall` can compare responses against retrieved documents and flag hallucination-style unsupported claims or unprofessional tone.
@@ -112,6 +118,17 @@ Use it to allowlist tools, block disallowed tools, validate arguments, and requi
 ### `RetrievalSanitizer`
 
 Use it before injecting retrieved documents into context so hostile instructions in your RAG data store do not quietly become model instructions.
+
+### Contract Stability
+
+The 0.1.x line treats `guardModelRequest()`, `protectWithAdapter()`, `reviewModelResponse()`, `ToolPermissionFirewall`, and `RetrievalSanitizer` as the long-term integration contracts. The exported `CORE_INTERFACES` map can be logged or asserted by applications that want to pin expected behavior.
+
+Recommended presets:
+
+- `shadowFirst` for low-friction rollout
+- `strict` for high-sensitivity routes
+- `ragSafe` for retrieval-heavy flows
+- `agentTools` for tool-calling and approval-gated agent actions
 
 ### `AuditTrail`
 
@@ -184,6 +201,44 @@ const shield = new BlackwallShield({
 });
 ```
 
+### Route and domain examples
+
+For RAG:
+
+```js
+const shield = new BlackwallShield({
+  preset: 'shadowFirst',
+  routePolicies: [
+    {
+      route: '/api/rag/search',
+      options: {
+        policyPack: 'government',
+        outputFirewallDefaults: {
+          retrievalDocuments: kbDocs,
+        },
+      },
+    },
+  ],
+});
+```
+
+For agent tool-calling:
+
+```js
+const toolFirewall = new ToolPermissionFirewall({
+  allowedTools: ['search', 'lookupCustomer', 'createRefund'],
+  requireHumanApprovalFor: ['createRefund'],
+});
+```
+
+### Operational telemetry summaries
+
+```js
+const summary = summarizeOperationalTelemetry(events);
+console.log(summary.byRoute);
+console.log(summary.highestSeverity);
+```
+
 ### Inspect model output
 
 ```js
@@ -227,12 +282,18 @@ console.log(tools.inspectCall({ tool: 'lookupCustomer', args: { id: 'cus_123' } 
 - `npm run changeset` creates a version/changelog entry for the next release
 - `npm run version-packages` applies pending Changesets locally
 
+## Migration and Benchmarks
+
+- See [MIGRATING.md](/Users/vishnu/Documents/blackwall-llm-shield/blackwall-llm-shield-js/MIGRATING.md) for compatibility notes and stable contract guidance
+- See [BENCHMARKS.md](/Users/vishnu/Documents/blackwall-llm-shield/blackwall-llm-shield-js/BENCHMARKS.md) for baseline latency numbers and regression coverage
+
 ## Rollout Notes
 
 - Start with `preset: 'shadowFirst'` or `shadowMode: true` and inspect `report.telemetry` plus `onTelemetry` events before enabling hard blocking.
 - Use `RetrievalSanitizer` and `ToolPermissionFirewall` in front of RAG, search, admin actions, and tool-calling flows.
 - Add regression prompts for instruction overrides, prompt leaks, token leaks, and Australian PII samples so upgrades stay safe.
 - Expect some latency increase from grounding checks, output review, and custom detectors; benchmark with your real prompt and response sizes before enforcing globally.
+- For agent workflows, keep approval-gated tools and route-specific presets separate from end-user chat routes so operators can see distinct risk patterns.
 
 ## Support
 
