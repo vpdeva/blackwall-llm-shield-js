@@ -62,12 +62,15 @@ export interface ShieldOptions {
 
 export class BlackwallShield {
   constructor(options?: ShieldOptions);
+  use(plugin: Record<string, unknown>): this;
   inspectText(text: unknown): Record<string, unknown>;
   guardModelRequest(input?: { messages?: ShieldMessage[]; metadata?: Record<string, unknown>; allowSystemMessages?: boolean; comparePolicyPacks?: string[] }): Promise<GuardResult>;
   reviewModelResponse(input?: { output: unknown; metadata?: Record<string, unknown>; outputFirewall?: OutputFirewall | null; firewallOptions?: Record<string, unknown> }): Promise<ReviewResult>;
   protectModelCall(input: Record<string, unknown>): Promise<Record<string, unknown>>;
+  protectZeroTrustModelCall(input: Record<string, unknown>): Promise<Record<string, unknown>>;
   protectJsonModelCall(input: Record<string, unknown>): Promise<JsonProtectionResult>;
   protectWithAdapter(input: { adapter: ProviderAdapter; messages?: ShieldMessage[]; metadata?: Record<string, unknown>; allowSystemMessages?: boolean; comparePolicyPacks?: string[]; outputFirewall?: OutputFirewall | null; firewallOptions?: Record<string, unknown> }): Promise<Record<string, unknown>>;
+  generateCoverageReport(options?: Record<string, unknown>): Record<string, unknown>;
 }
 
 export class OutputFirewall {
@@ -79,6 +82,25 @@ export class ToolPermissionFirewall {
   constructor(options?: Record<string, unknown>);
   inspectCall(input: Record<string, unknown>): Record<string, unknown>;
   inspectCallAsync?(input: Record<string, unknown>): Promise<Record<string, unknown>>;
+}
+
+export class AgentIdentityRegistry {
+  constructor(options?: Record<string, unknown>);
+  register(agentId: string, profile?: Record<string, unknown>): Record<string, unknown>;
+  get(agentId: string): Record<string, unknown> | null;
+  issueEphemeralToken(agentId: string, options?: Record<string, unknown>): Record<string, unknown>;
+  verifyEphemeralToken(token: string): Record<string, unknown>;
+  recordSecurityEvent(agentId: string, event?: Record<string, unknown>): Record<string, unknown>;
+  getTrustScore(agentId: string): number | null;
+  issueSignedPassport(agentId: string, options?: Record<string, unknown>): Record<string, unknown>;
+  verifySignedPassport(passport?: Record<string, unknown>): Record<string, unknown>;
+  issuePassportToken(agentId: string, options?: Record<string, unknown>): string;
+  verifyPassportToken(token: string): Record<string, unknown>;
+}
+
+export class AgenticCapabilityGater {
+  constructor(options?: Record<string, unknown>);
+  evaluate(agentId: string, capabilities?: Record<string, unknown>): Record<string, unknown>;
 }
 
 export class ValueAtRiskCircuitBreaker {
@@ -97,10 +119,33 @@ export class CrossModelConsensusWrapper {
   evaluate(input?: Record<string, unknown>): Promise<Record<string, unknown>> | Record<string, unknown>;
 }
 
+export class QuorumApprovalEngine {
+  constructor(options?: Record<string, unknown>);
+  evaluate(input?: Record<string, unknown>): Promise<Record<string, unknown>> | Record<string, unknown>;
+}
+
+export class ConversationThreatTracker {
+  constructor(options?: Record<string, unknown>);
+  record(sessionId: string, injection?: Record<string, unknown>): Record<string, unknown> | null;
+  summarize(sessionId: string): Record<string, unknown>;
+  clear(sessionId: string): void;
+}
+
 export class DigitalTwinOrchestrator {
   constructor(options?: Record<string, unknown>);
   generate(): Record<string, unknown>;
   static fromToolPermissionFirewall(firewall: unknown): DigitalTwinOrchestrator;
+}
+
+export class AdversarialMutationEngine {
+  mutate(prompt?: string): Array<Record<string, unknown>>;
+  hardenCorpus(input?: Record<string, unknown>): Record<string, unknown>;
+}
+
+export class PromptProvenanceGraph {
+  constructor();
+  append(input?: Record<string, unknown>): Record<string, unknown>;
+  summarize(): Record<string, unknown>;
 }
 
 export class DataClassificationGate {
@@ -112,6 +157,11 @@ export class DataClassificationGate {
 export class ProviderRoutingPolicy {
   constructor(options?: Record<string, unknown>);
   choose(input?: Record<string, unknown>): Record<string, unknown>;
+}
+
+export class SovereignRoutingEngine {
+  constructor(options?: Record<string, unknown>);
+  route(input?: Record<string, unknown>): Record<string, unknown>;
 }
 
 export class ApprovalInboxModel {
@@ -139,6 +189,7 @@ export class PolicyLearningLoop {
   constructor();
   recordDecision(input?: Record<string, unknown>): Record<string, unknown> | null;
   suggestOverrides(): Array<Record<string, unknown>>;
+  buildTransparencyReport(input?: Record<string, unknown>): Record<string, unknown>;
 }
 
 export class RetrievalSanitizer {
@@ -165,7 +216,10 @@ export function buildPowerBIRecord(event?: Record<string, unknown>): Record<stri
 export function buildComplianceEventBundle(event?: Record<string, unknown>): Record<string, unknown>;
 export function sanitizeAuditEvent(event?: Record<string, unknown>, options?: Record<string, unknown>): Record<string, unknown>;
 export function detectOperationalDrift(previousSummary?: Record<string, unknown>, currentSummary?: Record<string, unknown>): Record<string, unknown>;
+export function buildTransparencyReport(input?: Record<string, unknown>): Record<string, unknown>;
+export function generateCoverageReport(options?: Record<string, unknown>): Record<string, unknown>;
 export function suggestPolicyOverride(input?: Record<string, unknown>): Record<string, unknown> | null;
+export function unvault(output?: unknown, vault?: Record<string, string>): string;
 export class PowerBIExporter {
   constructor(options?: Record<string, unknown>);
   send(events?: Array<Record<string, unknown>> | Record<string, unknown>): Promise<Array<Record<string, unknown>>>;

@@ -1,4 +1,6 @@
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 const RED_TEAM_PROMPT_LIBRARY = require('./red_team_prompts.json');
 const {
   createOpenAIAdapter,
@@ -43,6 +45,23 @@ const FIELD_HINTS = [
   'dob',
   'birth',
   'tfn',
+];
+
+const HOMOGLYPH_MAP = {
+  А: 'A', а: 'a', В: 'B', Е: 'E', е: 'e', К: 'K', М: 'M', Н: 'H', О: 'O', о: 'o', Р: 'P', р: 'p', С: 'C', с: 'c', Т: 'T', Х: 'X', х: 'x',
+  Ι: 'I', і: 'i', Ѕ: 'S', ѕ: 's', ԁ: 'd', ԍ: 'g', յ: 'j', ⅼ: 'l', ո: 'n', ս: 'u',
+};
+const OWASP_LLM_TOP10_2025 = [
+  'LLM01:2025 Prompt Injection',
+  'LLM02:2025 Insecure Output Handling',
+  'LLM03:2025 Training Data Poisoning',
+  'LLM04:2025 Data and Model Poisoning',
+  'LLM05:2025 Improper Output Reliance',
+  'LLM06:2025 Sensitive Information Disclosure',
+  'LLM07:2025 System Prompt Leakage',
+  'LLM08:2025 Excessive Agency',
+  'LLM09:2025 Overreliance',
+  'LLM10:2025 Resource Exhaustion',
 ];
 
 const PROMPT_INJECTION_RULES = [
@@ -271,7 +290,15 @@ const COMPLIANCE_MAP = {
   unsafe_code: ['LLM02:2025 Insecure Output Handling'],
   token_budget_exceeded: ['NIST AI RMF: Govern 3.2', 'LLM10:2025 Resource Exhaustion'],
   retrieval_poisoning: ['LLM04:2025 Data and Model Poisoning'],
+  training_data_poisoning: ['LLM03:2025 Training Data Poisoning'],
+  grounding_validation: ['LLM05:2025 Improper Output Reliance'],
+  tool_permission_guard: ['LLM08:2025 Excessive Agency'],
+  human_review_gate: ['LLM09:2025 Overreliance'],
 };
+
+function normalizeUnicodeText(input) {
+  return String(input || '').normalize('NFKC').replace(/./g, (char) => HOMOGLYPH_MAP[char] || char);
+}
 
 function sanitizeText(input, maxLength = 5000) {
   if (typeof input !== 'string') return '';
@@ -717,6 +744,52 @@ function summarizeOperationalTelemetry(events = []) {
   return summary;
 }
 
+class RouteBaselineTracker {
+  constructor(options = {}) {
+    this.windowSize = options.windowSize || 200;
+    this.events = [];
+  }
+
+  record(event = {}) {
+    this.events.push({
+      at: event.at || new Date().toISOString(),
+      route: event.route || event.metadata && event.metadata.route || 'unknown',
+      userId: event.userId || event.metadata && (event.metadata.userId || event.metadata.user_id) || 'anonymous',
+      blocked: !!event.blocked,
+      score: Number(event.score || event.report && event.report.promptInjection && event.report.promptInjection.score || 0),
+    });
+    this.events = this.events.slice(-this.windowSize);
+  }
+
+  detect({ route = 'unknown', userId = 'anonymous', events = [] } = {}) {
+    const pool = [...this.events, ...(Array.isArray(events) ? events : [])].map((event) => ({
+      route: event.route || event.metadata && event.metadata.route || 'unknown',
+      userId: event.userId || event.metadata && (event.metadata.userId || event.metadata.user_id) || 'anonymous',
+      blocked: !!event.blocked,
+      score: Number(event.score || event.report && event.report.promptInjection && event.report.promptInjection.score || 0),
+    }));
+    const routeEvents = pool.filter((event) => event.route === route);
+    const userEvents = pool.filter((event) => event.userId === userId);
+    const latest = pool.filter((event) => event.route === route && event.userId === userId).slice(-5);
+    const priorRoute = routeEvents.slice(0, Math.max(0, routeEvents.length - 1));
+    const priorUser = userEvents.slice(0, Math.max(0, userEvents.length - 1));
+    const routeBaseline = priorRoute.length ? priorRoute.reduce((sum, event) => sum + event.score, 0) / priorRoute.length : 0;
+    const userBaseline = priorUser.length ? priorUser.reduce((sum, event) => sum + event.score, 0) / priorUser.length : 0;
+    const latestAverage = latest.length ? latest.slice(-1).reduce((sum, event) => sum + event.score, 0) / 1 : 0;
+    const baseline = Math.max(routeBaseline || 0, userBaseline || 0, 1);
+    const ratio = latestAverage / baseline;
+    return {
+      route,
+      userId,
+      baselineScore: Number(baseline.toFixed(2)),
+      currentScore: Number(latestAverage.toFixed(2)),
+      score: Number(Math.min(0.99, ratio / 10).toFixed(2)),
+      anomalous: ratio >= 3,
+      reason: ratio >= 3 ? `injection rate ${ratio.toFixed(1)}x baseline` : 'within baseline',
+    };
+  }
+}
+
 function parseJsonOutput(output) {
   if (typeof output === 'string') return JSON.parse(output);
   return output;
@@ -808,11 +881,97 @@ function applyCustomPromptDetectors(injection, text, options = {}, metadata = {}
   };
 }
 
+function applyPluginDetectors(injection, text, options = {}, metadata = {}) {
+  const plugins = Array.isArray(options.plugins) ? options.plugins : [];
+  if (!plugins.length) return injection;
+  const matches = [...(injection.matches || [])];
+  const seen = new Set(matches.map((item) => item.id));
+  let score = injection.score || 0;
+  for (const plugin of plugins) {
+    if (!plugin || typeof plugin.detect !== 'function') continue;
+    const results = plugin.detect(String(text || ''), { metadata, options }) || [];
+    for (const finding of (Array.isArray(results) ? results : [results])) {
+      if (!finding || !finding.id || seen.has(finding.id)) continue;
+      seen.add(finding.id);
+      const detectorScore = Math.max(0, Math.min(finding.score || 0, 40));
+      matches.push({
+        id: finding.id,
+        score: detectorScore,
+        reason: finding.reason || `Plugin ${plugin.id || 'custom'} matched`,
+        source: plugin.id || 'plugin',
+        matched: finding.matched,
+        version: plugin.version || null,
+      });
+      score += detectorScore;
+    }
+  }
+  const cappedScore = Math.min(score, 100);
+  return {
+    ...injection,
+    matches,
+    score: cappedScore,
+    level: riskLevelFromScore(cappedScore),
+    blockedByDefault: cappedScore >= 45,
+  };
+}
+
+function applyPluginOutputScans(review, output, options = {}, metadata = {}) {
+  const plugins = Array.isArray(options.plugins) ? options.plugins : [];
+  if (!plugins.length) return review;
+  const findings = [...(review.findings || [])];
+  const seen = new Set(findings.map((item) => item.id));
+  let severity = review.severity || 'low';
+  for (const plugin of plugins) {
+    if (!plugin || typeof plugin.outputScan !== 'function') continue;
+    const results = plugin.outputScan(String(output || ''), { metadata, options, review }) || [];
+    for (const finding of (Array.isArray(results) ? results : [results])) {
+      if (!finding || !finding.id || seen.has(finding.id)) continue;
+      seen.add(finding.id);
+      findings.push({
+        id: finding.id,
+        severity: finding.severity || 'medium',
+        reason: finding.reason || `Plugin ${plugin.id || 'custom'} flagged output`,
+        source: plugin.id || 'plugin',
+      });
+      if (severityWeight(finding.severity || 'medium') > severityWeight(severity)) severity = finding.severity || 'medium';
+    }
+  }
+  return {
+    ...review,
+    findings,
+    severity,
+    allowed: review.allowed && !compareRisk(severity, 'high'),
+    complianceMap: mapCompliance(findings.map((item) => item.id)),
+  };
+}
+
+function applyPluginRetrievalScans(documents, options = {}, metadata = {}) {
+  const plugins = Array.isArray(options.plugins) ? options.plugins : [];
+  if (!plugins.length) return documents;
+  return (Array.isArray(documents) ? documents : []).map((doc) => {
+    const pluginFindings = [];
+    for (const plugin of plugins) {
+      if (!plugin || typeof plugin.retrievalScan !== 'function') continue;
+      const results = plugin.retrievalScan(doc, { metadata, options }) || [];
+      pluginFindings.push(...(Array.isArray(results) ? results : [results]).filter(Boolean));
+    }
+    return pluginFindings.length ? { ...doc, pluginFindings } : doc;
+  });
+}
+
+function enrichTelemetryWithPlugins(event, options = {}) {
+  const plugins = Array.isArray(options.plugins) ? options.plugins : [];
+  return plugins.reduce((current, plugin) => {
+    if (!plugin || typeof plugin.enrichTelemetry !== 'function') return current;
+    return plugin.enrichTelemetry(current, { options }) || current;
+  }, event);
+}
+
 function resolveEffectiveShieldOptions(baseOptions = {}, metadata = {}) {
   const presetOptions = resolveShieldPreset(baseOptions.preset);
   const routePolicy = resolveRoutePolicy(baseOptions.routePolicies, metadata);
   const routePresetOptions = resolveShieldPreset(routePolicy && routePolicy.preset);
-  return {
+  const merged = {
     ...baseOptions,
     ...presetOptions,
     ...routePresetOptions,
@@ -843,6 +1002,7 @@ function resolveEffectiveShieldOptions(baseOptions = {}, metadata = {}) {
     ]),
     routePolicy,
   };
+  return merged;
 }
 
 function cloneRegex(regex) {
@@ -960,7 +1120,7 @@ function normalizeLeetspeak(text) {
 }
 
 function deobfuscateText(input, options = {}) {
-  const sanitized = sanitizeText(input, options.maxLength || 5000);
+  const sanitized = normalizeUnicodeText(sanitizeText(input, options.maxLength || 5000));
   const variants = [];
   const seen = new Set([sanitized]);
   const addVariant = (kind, text, source, depth = 1) => {
@@ -977,6 +1137,8 @@ function deobfuscateText(input, options = {}) {
 
   const collectDecodedVariants = (text) => {
     const decodedVariants = [];
+    const normalized = normalizeUnicodeText(text);
+    if (normalized && normalized !== text) decodedVariants.push({ kind: 'unicode_nfkc', text: normalized, source: text });
     const leet = normalizeLeetspeak(text);
     if (leet) decodedVariants.push({ kind: 'leetspeak', text: leet, source: text });
     for (const match of text.match(/[A-Za-z0-9+/=]{16,}/g) || []) {
@@ -1341,6 +1503,57 @@ class SessionBuffer {
   }
 }
 
+class ConversationThreatTracker {
+  constructor(options = {}) {
+    this.windowSize = options.windowSize || 10;
+    this.blockThreshold = options.blockThreshold || 80;
+    this.sessions = new Map();
+  }
+
+  record(sessionId, injection = {}) {
+    if (!sessionId) return null;
+    const history = this.sessions.get(sessionId) || [];
+    const entry = {
+      at: new Date().toISOString(),
+      score: Number(injection.score || 0),
+      level: injection.level || 'low',
+      ruleIds: Array.isArray(injection.matches) ? injection.matches.map((item) => item.id).filter(Boolean) : [],
+    };
+    const next = [...history, entry].slice(-this.windowSize);
+    this.sessions.set(sessionId, next);
+    const rollingScore = next.reduce((sum, item) => sum + item.score, 0);
+    const trend = next.length >= 2 ? next[next.length - 1].score - next[0].score : entry.score;
+    return {
+      sessionId,
+      turns: next.length,
+      rollingScore,
+      trend,
+      blocked: rollingScore >= this.blockThreshold,
+      highestLevel: next.reduce((level, item) => compareRisk(item.level, level) ? item.level : level, 'low'),
+      history: next,
+    };
+  }
+
+  summarize(sessionId) {
+    const history = this.sessions.get(sessionId) || [];
+    const rollingScore = history.reduce((sum, item) => sum + item.score, 0);
+    const trend = history.length >= 2 ? history[history.length - 1].score - history[0].score : (history[0] ? history[0].score : 0);
+    return {
+      sessionId,
+      turns: history.length,
+      rollingScore,
+      trend,
+      blocked: rollingScore >= this.blockThreshold,
+      highestLevel: history.reduce((level, item) => compareRisk(item.level, level) ? item.level : level, 'low'),
+      history,
+    };
+  }
+
+  clear(sessionId) {
+    if (sessionId) this.sessions.delete(sessionId);
+  }
+}
+
 class TokenBudgetFirewall {
   constructor(options = {}) {
     this.maxTokensPerUser = options.maxTokensPerUser || 8000;
@@ -1387,21 +1600,34 @@ class BlackwallShield {
       shadowPolicyPacks: [],
       entityDetectors: [],
       customPromptDetectors: [],
+      plugins: [],
       suppressPromptRules: [],
       routePolicies: [],
       detectNamedEntities: false,
       semanticScorer: null,
       sessionBuffer: null,
+      conversationThreatTracker: options.conversationThreatTracker === undefined ? new ConversationThreatTracker() : options.conversationThreatTracker,
       tokenBudgetFirewall: null,
+      provenanceGraph: options.provenanceGraph === undefined ? new PromptProvenanceGraph() : options.provenanceGraph,
       systemPrompt: null,
       outputFirewallDefaults: {},
       onAlert: null,
       onTelemetry: null,
       telemetryExporters: [],
+      baselineTracker: options.baselineTracker === undefined ? new RouteBaselineTracker() : options.baselineTracker,
+      auditTrail: options.auditTrail === undefined ? new AuditTrail({ secret: options.attestationSecret || 'blackwall-attestation-secret' }) : options.auditTrail,
       identityResolver: null,
       webhookUrl: null,
       ...options,
     };
+  }
+
+  use(plugin) {
+    if (!plugin || !['detect', 'outputScan', 'retrievalScan', 'enrichTelemetry'].some((key) => typeof plugin[key] === 'function')) {
+      throw new TypeError('Plugins must expose at least one hook: detect, outputScan, retrievalScan, or enrichTelemetry');
+    }
+    this.options.plugins = [...(this.options.plugins || []), plugin];
+    return this;
   }
 
   inspectText(text) {
@@ -1409,6 +1635,7 @@ class BlackwallShield {
     const pii = maskValue(text, effectiveOptions);
     let injection = detectPromptInjection(text, effectiveOptions);
     injection = applyCustomPromptDetectors(injection, String(text || ''), effectiveOptions, {});
+    injection = applyPluginDetectors(injection, String(text || ''), effectiveOptions, {});
     injection = applyPromptRuleSuppressions(injection, effectiveOptions.suppressPromptRules);
     return {
       sanitized: pii.original || sanitizeText(text, effectiveOptions.maxLength),
@@ -1430,7 +1657,10 @@ class BlackwallShield {
   }
 
   async emitTelemetry(event) {
-    const enriched = buildEnterpriseTelemetryEvent(event, this.options.identityResolver);
+    const enriched = enrichTelemetryWithPlugins(buildEnterpriseTelemetryEvent(event, this.options.identityResolver), this.options);
+    if (this.options.baselineTracker && typeof this.options.baselineTracker.record === 'function') {
+      this.options.baselineTracker.record(enriched);
+    }
     if (typeof this.options.onTelemetry === 'function') {
       await this.options.onTelemetry(enriched);
     }
@@ -1467,14 +1697,29 @@ class BlackwallShield {
     const sessionContext = sessionBuffer && typeof sessionBuffer.render === 'function'
       ? sessionBuffer.render()
       : promptCandidate;
+    const retrievalDocuments = applyPluginRetrievalScans(metadata.retrievalDocuments || metadata.retrieval_documents || [], effectiveOptions, metadata);
     let injection = detectPromptInjection(sessionContext, effectiveOptions);
     injection = applyCustomPromptDetectors(injection, Array.isArray(sessionContext) ? JSON.stringify(sessionContext) : String(sessionContext || ''), effectiveOptions, metadata);
+    injection = applyPluginDetectors(injection, Array.isArray(sessionContext) ? JSON.stringify(sessionContext) : String(sessionContext || ''), effectiveOptions, metadata);
     injection = applyPromptRuleSuppressions(injection, effectiveOptions.suppressPromptRules);
+    const tracker = effectiveOptions.conversationThreatTracker;
+    const threatTrajectory = tracker && typeof tracker.record === 'function'
+      ? tracker.record(metadata.sessionId || metadata.session_id || metadata.conversationId || metadata.conversation_id, injection)
+      : null;
+    const provenance = effectiveOptions.provenanceGraph && typeof effectiveOptions.provenanceGraph.append === 'function'
+      ? effectiveOptions.provenanceGraph.append({
+        agentId: metadata.agentId || metadata.agent_id || metadata.route || 'shield',
+        input: Array.isArray(sessionContext) ? JSON.stringify(sessionContext) : String(sessionContext || ''),
+        output: JSON.stringify(masked.masked || []),
+        riskDelta: injection.score || 0,
+      })
+      : null;
 
     const primaryPolicy = resolvePolicyPack(effectiveOptions.policyPack);
     const threshold = (primaryPolicy && primaryPolicy.promptInjectionThreshold) || effectiveOptions.promptInjectionThreshold;
     const wouldBlock = effectiveOptions.blockOnPromptInjection && compareRisk(injection.level, threshold);
-    const shouldBlock = effectiveOptions.shadowMode ? false : wouldBlock;
+    const trajectoryBlocked = !!(threatTrajectory && threatTrajectory.blocked);
+    const shouldBlock = effectiveOptions.shadowMode ? false : (wouldBlock || trajectoryBlocked);
     const shouldNotify = compareRisk(injection.level, effectiveOptions.notifyOnRiskLevel);
     const policyNames = [...new Set([...(effectiveOptions.shadowPolicyPacks || []), ...comparePolicyPacks].filter(Boolean))];
     const policyComparisons = policyNames.map((name) => evaluatePolicyPack(injection, name, effectiveOptions.promptInjectionThreshold));
@@ -1502,6 +1747,8 @@ class BlackwallShield {
         blocked: shouldBlock || !budgetResult.allowed,
         threshold,
       },
+      trajectory: threatTrajectory,
+      provenance,
       policyPack: primaryPolicy ? primaryPolicy.name : null,
       policyComparisons,
       tokenBudget: budgetResult,
@@ -1519,8 +1766,10 @@ class BlackwallShield {
         promptTokenEstimate: budgetResult.estimatedTokens,
         complianceMap: mapCompliance([
           ...injection.matches.map((item) => item.id),
+          ...(threatTrajectory && threatTrajectory.blocked ? ['trajectory_escalation'] : []),
           ...(budgetResult.allowed ? [] : ['token_budget_exceeded']),
         ]),
+        retrievalDocumentsInspected: retrievalDocuments.length,
       },
     };
 
@@ -1534,13 +1783,16 @@ class BlackwallShield {
     if (shouldNotify || wouldBlock) {
       await this.notify({
         type: shouldBlock ? 'llm_request_blocked' : (wouldBlock ? 'llm_request_shadow_blocked' : 'llm_request_risky'),
-        severity: wouldBlock ? injection.level : 'warning',
-        reason: wouldBlock ? 'Prompt injection threshold exceeded' : 'Prompt injection risk detected',
+        severity: (wouldBlock || trajectoryBlocked) ? injection.level : 'warning',
+        reason: trajectoryBlocked ? 'Conversation threat trajectory exceeded policy threshold' : (wouldBlock ? 'Prompt injection threshold exceeded' : 'Prompt injection risk detected'),
         report,
       });
     }
 
     const finalBlocked = shouldBlock || !budgetResult.allowed;
+    const attestation = this.options.auditTrail && typeof this.options.auditTrail.issueAttestation === 'function'
+      ? this.options.auditTrail.issueAttestation({ metadata, blocked: finalBlocked })
+      : null;
     return {
       allowed: !finalBlocked,
       blocked: finalBlocked,
@@ -1548,7 +1800,12 @@ class BlackwallShield {
       messages: masked.masked,
       report,
       vault: masked.vault,
+      attestation,
     };
+  }
+
+  generateCoverageReport(options = {}) {
+    return generateCoverageReport({ ...this.options, ...options });
   }
 
   async reviewModelResponse({ output, metadata = {}, outputFirewall = null, firewallOptions = {} } = {}) {
@@ -1557,14 +1814,28 @@ class BlackwallShield {
     const firewall = outputFirewall || new OutputFirewall({
       riskThreshold: (primaryPolicy && primaryPolicy.outputRiskThreshold) || 'high',
       systemPrompt: effectiveOptions.systemPrompt,
+      cotScanner: new CoTScanner({
+        systemPrompt: effectiveOptions.systemPrompt,
+        scanChainOfThought: firewallOptions.scanChainOfThought !== false,
+      }),
       ...effectiveOptions.outputFirewallDefaults,
       ...firewallOptions,
     });
-    const review = firewall.inspect(output, {
+    let review = firewall.inspect(output, {
       systemPrompt: effectiveOptions.systemPrompt,
+      scanChainOfThought: firewallOptions.scanChainOfThought !== false,
       ...(effectiveOptions.outputFirewallDefaults || {}),
       ...firewallOptions,
     });
+    review = applyPluginOutputScans(review, output, effectiveOptions, metadata);
+    const provenance = effectiveOptions.provenanceGraph && typeof effectiveOptions.provenanceGraph.append === 'function'
+      ? effectiveOptions.provenanceGraph.append({
+        agentId: metadata.agentId || metadata.agent_id || metadata.model || 'model',
+        input: metadata.promptHash || '',
+        output: typeof output === 'string' ? output : JSON.stringify(output || ''),
+        riskDelta: review.hallucinationRisk || 0,
+      })
+      : null;
     const report = {
       package: 'blackwall-llm-shield-js',
       createdAt: new Date().toISOString(),
@@ -1578,6 +1849,7 @@ class BlackwallShield {
           piiEntityCounts: summarizeSensitiveFindings(review.piiFindings),
           complianceMap: mapCompliance(review.findings.map((item) => item.id)),
         },
+        provenance,
       },
     };
 
@@ -1599,6 +1871,9 @@ class BlackwallShield {
     return {
       ...review,
       report,
+      attestation: this.options.auditTrail && typeof this.options.auditTrail.issueAttestation === 'function'
+        ? this.options.auditTrail.issueAttestation({ metadata, blocked: !review.allowed })
+        : null,
     };
   }
 
@@ -1753,6 +2028,67 @@ class BlackwallShield {
       };
     }
   }
+
+  async protectZeroTrustModelCall(options = {}) {
+    const result = await this.protectModelCall(options);
+    const maskedOutput = result.review && result.review.maskedOutput != null ? result.review.maskedOutput : result.response;
+    return {
+      ...result,
+      rehydratedOutput: result.request && result.request.vault ? unvault(maskedOutput, result.request.vault) : maskedOutput,
+      zeroTrust: {
+        vaultUsed: !!(result.request && result.request.vault && Object.keys(result.request.vault).length),
+      },
+    };
+  }
+
+  detectAnomalies({ route = 'unknown', userId = 'anonymous', events = [] } = {}) {
+    const tracker = this.options.baselineTracker || new RouteBaselineTracker();
+    return tracker.detect({ route, userId, events });
+  }
+
+  async replayTelemetry({ events = [], compareConfig = {} } = {}) {
+    const replayShield = new BlackwallShield(compareConfig);
+    let wouldHaveBlocked = 0;
+    let changed = 0;
+    for (const event of (Array.isArray(events) ? events : [])) {
+      const originalBlocked = !!event.blocked;
+      const promptLevel = event.report && event.report.promptInjection && event.report.promptInjection.level;
+      const threshold = compareConfig.promptInjectionThreshold || compareConfig.prompt_injection_threshold || 'high';
+      const replayBlocked = promptLevel ? compareRisk(promptLevel, threshold) : originalBlocked;
+      if (replayBlocked) wouldHaveBlocked += 1;
+      if (replayBlocked !== originalBlocked) changed += 1;
+    }
+    return {
+      totalEvents: (Array.isArray(events) ? events : []).length,
+      wouldHaveBlocked,
+      falsePositiveEstimate: changed,
+      compareConfig: buildShieldOptions(compareConfig),
+    };
+  }
+
+  async syncThreatIntel({ feedUrl = '', fetchFn = null, autoHarden = false, persist = false, corpusPath = undefined } = {}) {
+    const runner = fetchFn || (typeof fetch === 'function' ? fetch : null);
+    if (!runner) throw new Error('No fetch implementation available for threat intel sync');
+    const response = await runner(feedUrl);
+    const payload = typeof response.json === 'function' ? await response.json() : response;
+    const prompts = Array.isArray(payload) ? payload : (payload.prompts || []);
+    this.options.threatIntel = prompts;
+    let hardened = null;
+    if (autoHarden && prompts.length) {
+      const engine = new AdversarialMutationEngine();
+      hardened = engine.hardenCorpus({
+        corpus: getRedTeamPromptLibrary(),
+        blockedPrompt: prompts[0].prompt || prompts[0],
+        persist,
+        corpusPath,
+      });
+    }
+    return {
+      synced: prompts.length,
+      prompts,
+      hardened,
+    };
+  }
 }
 
 function validateGrounding(text, documents = [], options = {}) {
@@ -1783,7 +2119,9 @@ function validateGrounding(text, documents = [], options = {}) {
     checked: docTokens.length > 0,
     supportedSentences: sentences.length - unsupported.length,
     unsupportedSentences: unsupported,
+    unsupportedClaims: unsupported,
     score: Number(Math.max(0, 1 - ratio).toFixed(2)),
+    hallucinationRisk: Number(ratio.toFixed(2)),
     severity,
     blocked: severity === 'high',
   };
@@ -1822,7 +2160,8 @@ class CoTScanner {
     if (output && typeof output === 'object' && typeof output.thinking === 'string') return output.thinking;
     const text = typeof output === 'string' ? output : JSON.stringify(output || '');
     const match = text.match(/<thinking>([\s\S]*?)<\/thinking>/i);
-    return match ? match[1].trim() : '';
+    if (match) return match[1].trim();
+    return this.options.scanChainOfThought ? text : '';
   }
 
   scan(output) {
@@ -1864,7 +2203,16 @@ class AgentIdentityRegistry {
   }
 
   register(agentId, profile = {}) {
-    const identity = { agentId, persona: profile.persona || 'default', scopes: profile.scopes || [], capabilities: profile.capabilities || {} };
+    const identity = {
+      agentId,
+      persona: profile.persona || 'default',
+      scopes: profile.scopes || [],
+      capabilities: profile.capabilities || {},
+      capabilityManifest: profile.capabilityManifest || profile.capabilities || {},
+      lineage: profile.lineage || [],
+      trustScore: profile.trustScore != null ? Number(profile.trustScore) : 100,
+      securityEvents: profile.securityEvents || [],
+    };
     this.identities.set(agentId, identity);
     return identity;
   }
@@ -1891,6 +2239,21 @@ class AgentIdentityRegistry {
     return { valid: true, agentId: record.agentId };
   }
 
+  recordSecurityEvent(agentId, event = {}) {
+    const identity = this.get(agentId) || this.register(agentId, {});
+    const severity = event.severity || 'low';
+    const penalty = severity === 'critical' ? 25 : severity === 'high' ? 15 : severity === 'medium' ? 8 : 3;
+    identity.securityEvents = [...(identity.securityEvents || []), { ...event, at: new Date().toISOString() }];
+    identity.trustScore = Math.max(0, Number(identity.trustScore != null ? identity.trustScore : 100) - penalty);
+    this.identities.set(agentId, identity);
+    return identity;
+  }
+
+  getTrustScore(agentId) {
+    const identity = this.get(agentId);
+    return identity ? Number(identity.trustScore != null ? identity.trustScore : 100) : null;
+  }
+
   issueSignedPassport(agentId, options = {}) {
     const identity = this.get(agentId) || this.register(agentId, options.profile || {});
     const securityScore = options.securityScore != null
@@ -1905,6 +2268,15 @@ class AgentIdentityRegistry {
       scopes: identity.scopes || [],
       persona: identity.persona || 'default',
       environment: options.environment || 'production',
+      capabilityManifest: options.capabilityManifest || identity.capabilityManifest || identity.capabilities || {},
+      lineage: options.lineage || identity.lineage || [],
+      trustScore: options.trustScore != null ? options.trustScore : this.getTrustScore(agentId),
+      attestationFormat: options.attestationFormat || 'jwt',
+      cryptoProfile: {
+        signingAlgorithm: options.signingAlgorithm || 'HS256',
+        pqcReady: options.pqcReady !== false,
+        transparencyMode: options.transparencyMode || 'explainable',
+      },
     };
     const signature = crypto.createHmac('sha256', this.secret).update(JSON.stringify(passport)).digest('hex');
     return { ...passport, signature };
@@ -2068,10 +2440,80 @@ class CrossModelConsensusWrapper {
   }
 }
 
+class QuorumApprovalEngine {
+  constructor(options = {}) {
+    this.auditors = Array.isArray(options.auditors) ? options.auditors : [];
+    this.threshold = options.threshold || Math.max(1, Math.ceil(this.auditors.length / 2));
+    this.registry = options.registry || null;
+  }
+
+  async evaluate({ tool, args = {}, context = {} } = {}) {
+    const votes = [];
+    for (const auditor of this.auditors) {
+      if (!auditor) continue;
+      const result = typeof auditor.inspect === 'function'
+        ? await auditor.inspect({ tool, args, context, sessionContext: context.sessionContext || null })
+        : (typeof auditor.evaluate === 'function'
+          ? await auditor.evaluate({
+            messages: context.consensusMessages || [{ role: 'user', content: JSON.stringify({ tool, args, context }) }],
+            metadata: context,
+            primaryResult: { blocked: false },
+          })
+          : null);
+      if (!result) continue;
+      const approved = result.approved != null ? !!result.approved : !result.disagreement;
+      votes.push({
+        auditor: result.auditor || auditor.name || `auditor_${votes.length + 1}`,
+        approved,
+        reason: result.reason || null,
+      });
+    }
+    const approvals = votes.filter((vote) => vote.approved).length;
+    const approved = approvals >= this.threshold;
+    if (!approved && this.registry && context.agentId) {
+      this.registry.recordSecurityEvent(context.agentId, {
+        type: 'quorum_disagreement',
+        severity: 'high',
+        tool,
+        approvals,
+        threshold: this.threshold,
+      });
+    }
+    return {
+      approved,
+      requiresApproval: !approved,
+      threshold: this.threshold,
+      approvals,
+      rejections: votes.length - approvals,
+      votes,
+      reason: approved ? null : 'Quorum approval threshold was not met',
+      trustScore: this.registry && context.agentId ? this.registry.getTrustScore(context.agentId) : null,
+    };
+  }
+}
+
+function applyDifferentialPrivacyToValue(value, options = {}) {
+  if (typeof value === 'number') return value + Number(options.numericNoise || 1);
+  if (typeof value === 'string') {
+    return applyDifferentialPrivacyNoise(value, {
+      differentialPrivacy: true,
+      differentialPrivacyEpsilon: options.epsilon || 1,
+    });
+  }
+  if (Array.isArray(value)) return value.map((item) => applyDifferentialPrivacyToValue(item, options));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, applyDifferentialPrivacyToValue(item, options)]));
+  }
+  return value;
+}
+
 class DigitalTwinOrchestrator {
   constructor(options = {}) {
     this.toolSchemas = options.toolSchemas || [];
     this.invocations = [];
+    this.simulationMode = options.simulationMode !== false;
+    this.differentialPrivacy = !!options.differentialPrivacy;
+    this.syntheticNoiseOptions = options.syntheticNoiseOptions || {};
   }
 
   generate() {
@@ -2079,8 +2521,18 @@ class DigitalTwinOrchestrator {
     for (const schema of this.toolSchemas) {
       if (!schema || !schema.name) continue;
       handlers[schema.name] = async (args = {}) => {
-        const response = schema.mockResponse || schema.sampleResponse || { ok: true, tool: schema.name, args };
-        this.invocations.push({ tool: schema.name, args, response, at: new Date().toISOString() });
+        const baseResponse = schema.mockResponse || schema.sampleResponse || { ok: true, tool: schema.name, args };
+        const response = this.differentialPrivacy
+          ? applyDifferentialPrivacyToValue(baseResponse, this.syntheticNoiseOptions)
+          : baseResponse;
+        this.invocations.push({
+          tool: schema.name,
+          args,
+          response,
+          simulationMode: this.simulationMode,
+          differentialPrivacy: this.differentialPrivacy,
+          at: new Date().toISOString(),
+        });
         return response;
       };
     }
@@ -2091,6 +2543,8 @@ class DigitalTwinOrchestrator {
         return handlers[tool](args);
       },
       invocations: this.invocations,
+      simulationMode: this.simulationMode,
+      differentialPrivacy: this.differentialPrivacy,
     };
   }
 
@@ -2099,6 +2553,37 @@ class DigitalTwinOrchestrator {
       ? firewall.options.toolSchemas
       : [];
     return new DigitalTwinOrchestrator({ toolSchemas: schemas });
+  }
+}
+
+class SovereignRoutingEngine {
+  constructor(options = {}) {
+    this.classificationGate = options.classificationGate || new DataClassificationGate();
+    this.providerRoutingPolicy = options.providerRoutingPolicy || new ProviderRoutingPolicy();
+    this.localProviders = options.localProviders || ['on-prem'];
+    this.globalProviders = options.globalProviders || ['global-cloud'];
+  }
+
+  route({ metadata = {}, findings = [], messages = [], requestedProvider = null, candidates = [] } = {}) {
+    const inspection = this.classificationGate.inspect({ metadata, findings, messages, provider: requestedProvider });
+    const classification = inspection.classification;
+    const sovereignCandidates = classification === 'restricted'
+      ? [...this.localProviders]
+      : classification === 'public'
+        ? [...this.globalProviders, ...this.localProviders]
+        : [...this.localProviders, ...this.globalProviders];
+    const routing = this.providerRoutingPolicy.choose({
+      route: metadata.route || metadata.path || 'default',
+      classification,
+      requestedProvider,
+      candidates: [...new Set([...(candidates || []), ...sovereignCandidates])],
+    });
+    return {
+      ...routing,
+      classification,
+      sovereigntyMode: classification === 'restricted' ? 'local-only' : classification === 'public' ? 'global-ok' : 'hybrid',
+      inspection,
+    };
   }
 }
 
@@ -2127,6 +2612,27 @@ function suggestPolicyOverride({ route = null, approval = null, guardResult = nu
   return null;
 }
 
+function buildTransparencyReport({ decision = {}, input = {}, rationale = null, suggestedPolicy = null } = {}) {
+  const report = decision.report || {};
+  const promptInjection = report.promptInjection || {};
+  const metadata = report.metadata || {};
+  const blocked = !!decision.blocked || decision.allowed === false;
+  return {
+    blocked,
+    reason: decision.reason || rationale || 'No explicit reason captured',
+    summary: blocked
+      ? 'Blackwall blocked the action because policy and risk signals exceeded the configured threshold.'
+      : 'Blackwall allowed the action under the current policy.',
+    evidence: {
+      route: input.route || metadata.route || metadata.path || null,
+      ruleIds: Array.isArray(promptInjection.matches) ? promptInjection.matches.map((item) => item.id).filter(Boolean) : [],
+      severity: promptInjection.level || decision.severity || null,
+    },
+    suggestedPolicy,
+    complianceNote: 'Use this report as an explainability artifact for operator review and policy tuning.',
+  };
+}
+
 class PolicyLearningLoop {
   constructor() {
     this.decisions = [];
@@ -2139,6 +2645,14 @@ class PolicyLearningLoop {
 
   suggestOverrides() {
     return this.decisions.map((entry) => suggestPolicyOverride(entry)).filter(Boolean);
+  }
+
+  buildTransparencyReport(input = {}) {
+    return buildTransparencyReport({
+      decision: input.guardResult || input.toolDecision || {},
+      input,
+      suggestedPolicy: suggestPolicyOverride(input),
+    });
   }
 }
 
@@ -2274,6 +2788,25 @@ class OutputFirewall {
   }
 }
 
+class StreamingOutputFirewall {
+  constructor(options = {}) {
+    this.outputFirewall = options.outputFirewall || new OutputFirewall(options);
+    this.buffer = '';
+    this.windowSize = options.windowSize || 4096;
+  }
+
+  ingest(chunk = '') {
+    this.buffer = `${this.buffer}${String(chunk || '')}`.slice(-this.windowSize);
+    const review = this.outputFirewall.inspect(this.buffer);
+    return {
+      blocked: !review.allowed,
+      allowed: review.allowed,
+      review,
+      bufferedLength: this.buffer.length,
+    };
+  }
+}
+
 class ToolPermissionFirewall {
   constructor(options = {}) {
     this.options = {
@@ -2286,6 +2819,7 @@ class ToolPermissionFirewall {
       valueAtRiskCircuitBreaker: null,
       consensusAuditor: null,
       crossModelConsensus: null,
+      quorumApprovalEngine: null,
       consensusRequiredFor: [],
       onApprovalRequest: null,
       approvalWebhookUrl: null,
@@ -2356,6 +2890,15 @@ class ToolPermissionFirewall {
         approvalRequest: { tool, args, context },
       };
     }
+    if (this.options.quorumApprovalEngine && (context.highImpact || this.options.consensusRequiredFor.includes(tool))) {
+      return {
+        allowed: false,
+        reason: 'Quorum approval requires async inspection',
+        requiresApproval: true,
+        requiresAsyncQuorum: true,
+        approvalRequest: { tool, args, context },
+      };
+    }
     const requiresApproval = this.options.requireHumanApprovalFor.includes(tool);
     return {
       allowed: !requiresApproval,
@@ -2385,6 +2928,23 @@ class ToolPermissionFirewall {
       }
       return { allowed: true, reason: null, requiresApproval: false, consensus };
     }
+    if (result.requiresAsyncQuorum && this.options.quorumApprovalEngine) {
+      const quorum = await this.options.quorumApprovalEngine.evaluate({
+        tool: input.tool,
+        args: input.args || {},
+        context: input.context || {},
+      });
+      if (!quorum.approved) {
+        return {
+          allowed: false,
+          reason: quorum.reason,
+          requiresApproval: true,
+          quorum,
+          approvalRequest: { tool: input.tool, args: input.args || {}, context: input.context || {}, quorum },
+        };
+      }
+      return { allowed: true, reason: null, requiresApproval: false, quorum };
+    }
     if (result.requiresApproval) {
       if (typeof this.options.onApprovalRequest === 'function') {
         await this.options.onApprovalRequest(result.approvalRequest);
@@ -2409,6 +2969,7 @@ class RetrievalSanitizer {
     this.options = {
       systemPrompt: null,
       similarityThreshold: 0.5,
+      plugins: [],
       ...options,
     };
   }
@@ -2440,7 +3001,7 @@ class RetrievalSanitizer {
 
   sanitizeDocuments(documents = []) {
     const poisoning = this.detectPoisoning(documents);
-    return (Array.isArray(documents) ? documents : []).map((doc, index) => {
+    const sanitized = (Array.isArray(documents) ? documents : []).map((doc, index) => {
       const text = sanitizeText(String(doc && doc.content ? doc.content : ''));
       const similarity = this.similarityToSystemPrompt(text);
       const strippedInstructions = RETRIEVAL_INJECTION_RULES.reduce((acc, rule) => acc.replace(cloneRegex(rule), '[REDACTED_RETRIEVAL_INSTRUCTION]'), text);
@@ -2457,6 +3018,7 @@ class RetrievalSanitizer {
         metadata: doc && doc.metadata ? doc.metadata : {},
       };
     });
+    return applyPluginRetrievalScans(sanitized, this.options);
   }
 
   validateAnswer(answer, documents = [], options = {}) {
@@ -2497,6 +3059,29 @@ class AuditTrail {
   summarize() {
     return summarizeSecurityEvents(this.events);
   }
+
+  issueAttestation(event = {}) {
+    const payload = {
+      inspectedAt: new Date().toISOString(),
+      route: event.route || event.metadata && event.metadata.route || null,
+      blocked: !!event.blocked,
+      package: 'blackwall-llm-shield-js',
+    };
+    const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT', kid: 'bw1' })).toString('base64url');
+    const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
+    const signature = crypto.createHmac('sha256', this.secret).update(`${header}.${body}`).digest('base64url');
+    return `bw1_${header}.${body}.${signature}`;
+  }
+
+  verifyAttestation(token) {
+    const raw = String(token || '').replace(/^bw1_/, '');
+    const parts = raw.split('.');
+    if (parts.length !== 3) return { valid: false, reason: 'Malformed attestation token' };
+    const [header, body, signature] = parts;
+    const expected = crypto.createHmac('sha256', this.secret).update(`${header}.${body}`).digest('base64url');
+    if (signature !== expected) return { valid: false, reason: 'Invalid attestation signature' };
+    return { valid: true, payload: JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) };
+  }
 }
 
 function createCanaryToken(label = 'default') {
@@ -2529,9 +3114,26 @@ function rehydrateResponse(maskedText, vault = {}) {
   return text;
 }
 
+function unvault(output, vault = {}) {
+  return rehydrateResponse(output, vault);
+}
+
 async function encryptVaultForClient(vault = {}, secret = '') {
-  const subtle = crypto.webcrypto && crypto.webcrypto.subtle;
-  if (!subtle) throw new Error('Web Crypto is not available');
+  const subtle = (crypto.webcrypto && crypto.webcrypto.subtle) || crypto.subtle;
+  if (!subtle) {
+    const salt = crypto.randomBytes(16);
+    const iv = crypto.randomBytes(12);
+    const key = crypto.pbkdf2Sync(secret, salt, 100000, 32, 'sha256');
+    const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+    const ciphertext = Buffer.concat([cipher.update(JSON.stringify(vault), 'utf8'), cipher.final()]);
+    return {
+      strategy: 'aes-256-gcm-pbkdf2',
+      salt: Buffer.from(salt).toString('base64'),
+      iv: Buffer.from(iv).toString('base64'),
+      ciphertext: Buffer.from(ciphertext).toString('base64'),
+      tag: cipher.getAuthTag().toString('base64'),
+    };
+  }
   const encoder = new TextEncoder();
   const salt = crypto.randomBytes(16);
   const iv = crypto.randomBytes(12);
@@ -2553,8 +3155,18 @@ async function encryptVaultForClient(vault = {}, secret = '') {
 }
 
 async function decryptVaultForClient(bundle = {}, secret = '') {
-  const subtle = crypto.webcrypto && crypto.webcrypto.subtle;
-  if (!subtle) throw new Error('Web Crypto is not available');
+  const subtle = (crypto.webcrypto && crypto.webcrypto.subtle) || crypto.subtle;
+  if (!subtle) {
+    const salt = Buffer.from(bundle.salt || '', 'base64');
+    const iv = Buffer.from(bundle.iv || '', 'base64');
+    const ciphertext = Buffer.from(bundle.ciphertext || '', 'base64');
+    const tag = Buffer.from(bundle.tag || '', 'base64');
+    const key = crypto.pbkdf2Sync(secret, salt, 100000, 32, 'sha256');
+    const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+    decipher.setAuthTag(tag);
+    const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+    return JSON.parse(plaintext.toString('utf8'));
+  }
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
   const salt = Buffer.from(bundle.salt || '', 'base64');
@@ -2625,6 +3237,98 @@ function buildAdminDashboardModel(events = [], alerts = []) {
     openAlerts: alerts.filter((alert) => !alert.resolved).length,
     recentAlerts: alerts.slice(-10),
   };
+}
+
+function generateCoverageReport(options = {}) {
+  const activeRuleIds = new Set([
+    ...PROMPT_INJECTION_RULES.map((rule) => rule.id),
+    ...OUTPUT_LEAKAGE_RULES.map((rule) => rule.id),
+    'retrieval_poisoning',
+    ...(options.tokenBudgetFirewall ? ['token_budget_exceeded'] : []),
+    ...((options.retrievalDocuments || options.retrieval_documents || []).length ? ['grounding_validation'] : []),
+    ...(options.toolPermissionFirewall || options.valueAtRiskCircuitBreaker || options.quorumApprovalEngine ? ['tool_permission_guard'] : []),
+    ...(options.shadowMode || options.approvalInboxModel ? ['human_review_gate'] : []),
+    ...(options.retrievalSanitizer || options.trainingDataControls ? ['training_data_poisoning'] : []),
+    ...((options.additionalRuleIds || []).filter(Boolean)),
+  ]);
+  for (const plugin of (Array.isArray(options.plugins) ? options.plugins : [])) {
+    for (const item of (plugin.coverage || plugin.complianceMap || [])) activeRuleIds.add(item);
+  }
+  const covered = [...new Set([...activeRuleIds].flatMap((id) => COMPLIANCE_MAP[id] || []).filter((category) => OWASP_LLM_TOP10_2025.includes(category)))];
+  const byCategory = Object.fromEntries(OWASP_LLM_TOP10_2025.map((category) => [category, covered.includes(category) ? 'covered' : 'uncovered']));
+  const percent = Math.round((covered.length / OWASP_LLM_TOP10_2025.length) * 100);
+  const badge = `<svg xmlns="http://www.w3.org/2000/svg" width="220" height="20" role="img" aria-label="OWASP coverage ${percent}%"><rect width="120" height="20" fill="#333"/><rect x="120" width="100" height="20" fill="#0a7f5a"/><text x="60" y="14" fill="#fff" text-anchor="middle" font-family="Arial" font-size="11">OWASP LLM Top 10</text><text x="170" y="14" fill="#fff" text-anchor="middle" font-family="Arial" font-size="11">${percent}% covered</text></svg>`;
+  return {
+    version: 'OWASP-LLM-2025',
+    covered,
+    byCategory,
+    policyPack: options.policyPack || null,
+    routePolicies: (options.routePolicies || []).length,
+    percentCovered: percent,
+    badge,
+  };
+}
+
+class AdversarialMutationEngine {
+  mutate(prompt = '') {
+    const source = String(prompt || '');
+    const variants = [
+      { strategy: 'original', prompt: source },
+      { strategy: 'base64', prompt: Buffer.from(source).toString('base64') },
+      { strategy: 'rot13', prompt: source.replace(/[a-z]/gi, (char) => {
+        const base = char <= 'Z' ? 65 : 97;
+        return String.fromCharCode(((char.charCodeAt(0) - base + 13) % 26) + base);
+      }) },
+      { strategy: 'leetspeak', prompt: source.replace(/[aeiost]/gi, (char) => ({ a: '4', e: '3', i: '1', o: '0', s: '5', t: '7' }[char.toLowerCase()] || char)) },
+      { strategy: 'spaced', prompt: source.split('').join(' ') },
+      { strategy: 'paraphrase', prompt: source.replace(/\bignore\b/gi, 'disregard').replace(/\breveal\b/gi, 'show').replace(/\binstructions\b/gi, 'directives') },
+      { strategy: 'cross_lingual_es', prompt: source.replace(/\bignore previous instructions\b/i, 'ignora las instrucciones anteriores').replace(/\breveal the system prompt\b/i, 'revela el prompt del sistema') },
+      { strategy: 'transliteration', prompt: normalizeUnicodeText(source) },
+    ];
+    return variants.filter((item, index, arr) => arr.findIndex((candidate) => candidate.prompt === item.prompt) === index);
+  }
+
+  hardenCorpus({ corpus = RED_TEAM_PROMPT_LIBRARY, blockedPrompt = '', maxVariants = 10, persist = false, corpusPath = path.join(__dirname, 'red_team_prompts.json') } = {}) {
+    const mutations = this.mutate(blockedPrompt).slice(0, maxVariants);
+    const existing = new Set((Array.isArray(corpus) ? corpus : []).map((item) => item.prompt));
+    const additions = mutations
+      .filter((item) => item.prompt && !existing.has(item.prompt))
+      .map((item, index) => ({ id: `mutation_${index + 1}`, category: 'mutation', prompt: item.prompt, strategy: item.strategy }));
+    const nextCorpus = [...(Array.isArray(corpus) ? corpus : []), ...additions];
+    if (persist) {
+      fs.writeFileSync(corpusPath, `${JSON.stringify(nextCorpus, null, 2)}\n`, 'utf8');
+    }
+    return {
+      added: additions,
+      corpus: nextCorpus,
+      persisted: persist,
+      corpusPath,
+    };
+  }
+}
+
+class PromptProvenanceGraph {
+  constructor() {
+    this.hops = [];
+  }
+
+  append(hop = {}) {
+    const record = {
+      hop: this.hops.length + 1,
+      agentId: hop.agentId || hop.agent_id || 'unknown',
+      inputHash: crypto.createHash('sha256').update(String(hop.input || '')).digest('hex'),
+      outputHash: crypto.createHash('sha256').update(String(hop.output || '')).digest('hex'),
+      riskDelta: Number(hop.riskDelta || 0),
+      ts: new Date().toISOString(),
+    };
+    this.hops.push(record);
+    return record;
+  }
+
+  summarize() {
+    const mostRisky = this.hops.reduce((max, hop) => (hop.riskDelta > (max.riskDelta || 0) ? hop : max), {});
+    return { hops: this.hops, totalHops: this.hops.length, mostRiskyHop: mostRisky.hop || null };
+  }
 }
 
 function getRedTeamPromptLibrary() {
@@ -2738,9 +3442,11 @@ function buildShieldOptions(options = {}) {
 module.exports = {
   AgenticCapabilityGater,
   AgentIdentityRegistry,
+  AdversarialMutationEngine,
   AuditTrail,
   BlackwallShield,
   CoTScanner,
+  ConversationThreatTracker,
   CrossModelConsensusWrapper,
   DigitalTwinOrchestrator,
   ImageMetadataScanner,
@@ -2749,10 +3455,15 @@ module.exports = {
   OutputFirewall,
   PowerBIExporter,
   PolicyLearningLoop,
+  PromptProvenanceGraph,
+  QuorumApprovalEngine,
+  RouteBaselineTracker,
   RetrievalSanitizer,
   SessionBuffer,
   ShadowConsensusAuditor,
+  SovereignRoutingEngine,
   TokenBudgetFirewall,
+  StreamingOutputFirewall,
   ToolPermissionFirewall,
   ValueAtRiskCircuitBreaker,
   VisualInstructionDetector,
@@ -2774,17 +3485,20 @@ module.exports = {
   injectCanaryTokens,
   detectCanaryLeakage,
   rehydrateResponse,
+  unvault,
   encryptVaultForClient,
   decryptVaultForClient,
   rehydrateFromZeroKnowledgeBundle,
   ShadowAIDiscovery,
   summarizeSecurityEvents,
   buildAdminDashboardModel,
+  generateCoverageReport,
   getRedTeamPromptLibrary,
   runRedTeamSuite,
   buildShieldOptions,
   summarizeOperationalTelemetry,
   suggestPolicyOverride,
+  buildTransparencyReport,
   normalizeIdentityMetadata,
   buildEnterpriseTelemetryEvent,
   buildPowerBIRecord,

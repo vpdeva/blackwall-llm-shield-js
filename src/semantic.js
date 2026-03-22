@@ -4,6 +4,13 @@ class TransformersIntentScorer {
   constructor(classifier, options = {}) {
     this.classifier = classifier;
     this.threshold = options.threshold || 0.5;
+    this.labelMap = options.labelMap || {
+      jailbreak: 'jailbreak',
+      prompt_injection: 'prompt_injection',
+      unsafe: 'unsafe',
+      injection: 'prompt_injection',
+      malicious: 'unsafe',
+    };
   }
 
   async score(text) {
@@ -12,7 +19,8 @@ class TransformersIntentScorer {
     const matches = [];
     let total = 0;
     for (const item of items) {
-      const label = String(item.label || '').toLowerCase();
+      const rawLabel = String(item.label || '').toLowerCase();
+      const label = this.labelMap[rawLabel] || rawLabel;
       const score = Number(item.score || 0);
       if (['jailbreak', 'prompt_injection', 'unsafe'].includes(label) && score >= this.threshold) {
         const weighted = Math.min(40, Math.round(score * 40));
@@ -32,7 +40,7 @@ class TransformersIntentScorer {
 async function createOptionalLocalIntentScorer(options = {}) {
   try {
     const { pipeline } = require('@xenova/transformers');
-    const classifier = await pipeline('text-classification', options.model || 'Xenova/distilbert-base-uncased-finetuned-sst-2-english');
+    const classifier = await pipeline('text-classification', options.model || 'ProtectAI/deberta-v3-base-prompt-injection-v2');
     return new TransformersIntentScorer(classifier, options);
   } catch {
     return new LightweightIntentScorer(options);
