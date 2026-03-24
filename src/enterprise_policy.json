@@ -1,0 +1,95 @@
+{
+  "version": "1.0",
+  "provider_gateway": {
+    "metadata_key": "gateway_source",
+    "blocked_message": "Direct model access is not allowed. Route Gemini traffic through the approved Blackwall shield or sidecar.",
+    "approved_sources": {
+      "gemini": ["shield", "sidecar", "approved_gateway"]
+    }
+  },
+  "rules": [
+    {
+      "id": "block_credentials",
+      "directions": ["input", "output"],
+      "categories": ["api_key", "jwt", "bearer_token", "field_hint"],
+      "action": "block",
+      "priority": 100,
+      "message": "Credentials or secret material were detected. Remove tokens, keys, or secrets and retry through an approved secure workflow."
+    },
+    {
+      "id": "block_customer_and_employee_identifiers",
+      "directions": ["input", "output"],
+      "categories": ["employee_identifier", "customer_account_number"],
+      "action": "block",
+      "priority": 95,
+      "message": "Employee or customer identifiers were detected. Remove account or personnel identifiers and use an approved internal workflow."
+    },
+    {
+      "id": "block_payroll_and_salary",
+      "directions": ["input", "output"],
+      "categories": ["payroll_salary"],
+      "action": "block",
+      "priority": 94,
+      "message": "Payroll or salary information was detected. This content is restricted and cannot be sent to the model."
+    },
+    {
+      "id": "block_financial_forecasts",
+      "directions": ["input", "output"],
+      "categories": ["financial_forecast"],
+      "action": "block",
+      "priority": 93,
+      "message": "Financial forecast or guidance content was detected. Use an approved finance workflow instead of the general assistant."
+    },
+    {
+      "id": "block_board_material",
+      "directions": ["input", "output"],
+      "categories": ["board_material"],
+      "action": "block",
+      "priority": 92,
+      "message": "Board or directors' material was detected. This content is blocked from the general assistant."
+    },
+    {
+      "id": "block_mna_material",
+      "directions": ["input", "output"],
+      "categories": ["mna_material"],
+      "action": "block",
+      "priority": 91,
+      "message": "Merger, acquisition, or due-diligence content was detected. Route this request through the approved corporate-development workflow."
+    },
+    {
+      "id": "block_legal_material",
+      "directions": ["input", "output"],
+      "categories": ["legal_confidential_material"],
+      "action": "block",
+      "priority": 90,
+      "message": "Legal or privileged case material was detected. This request cannot continue in the standard assistant."
+    },
+    {
+      "id": "review_exec_project_material",
+      "directions": ["input", "output"],
+      "categories": ["project_codename"],
+      "action": "route_for_review",
+      "priority": 80,
+      "metadata": {
+        "environment": ["executive_briefing", "board", "production"]
+      },
+      "message": "Sensitive project or codename material was detected and has been routed for review."
+    },
+    {
+      "id": "warn_financial_values",
+      "directions": ["input", "output"],
+      "categories": ["financial_value"],
+      "action": "warn_and_confirm",
+      "priority": 70,
+      "message": "Financial values were detected. Confirm that you want to continue or remove the figures before retrying."
+    },
+    {
+      "id": "mask_general_pii",
+      "directions": ["input", "output"],
+      "categories": ["email", "phone", "address", "postcode", "dob", "person", "organization"],
+      "action": "mask",
+      "priority": 10,
+      "message": "Personal information was masked before the request continued."
+    }
+  ]
+}

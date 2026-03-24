@@ -1079,3 +1079,51 @@ test('zero-knowledge vault bundle can rehydrate entirely client-side', async () 
   assert.match(restored, /Alice Johnson/);
   assert.match(restored, /ceo@example.com/);
 });
+
+test('enterprise policy blocks board and forecast material', async () => {
+  const shield = new BlackwallShield();
+  const result = await shield.guardModelRequest({
+    messages: [{ role: 'user', content: 'Board deck includes revised revenue forecast and EBITDA guidance of $4.2m' }],
+    metadata: { environment: 'executive_briefing' },
+  });
+
+  assert.equal(result.blocked, true);
+  assert.equal(result.report.enterprisePolicy.action, 'block');
+  assert.ok(result.report.enterprisePolicy.categories.includes('financial_forecast'));
+});
+
+test('enterprise policy requires confirmation for financial values', async () => {
+  const shield = new BlackwallShield();
+  const blocked = await shield.guardModelRequest({
+    messages: [{ role: 'user', content: 'Please summarize $4.2m EBITDA for this quarter' }],
+  });
+  const allowed = await shield.guardModelRequest({
+    messages: [{ role: 'user', content: 'Please summarize $4.2m EBITDA for this quarter' }],
+    metadata: { confirmed_sensitive_operation: true },
+  });
+
+  assert.equal(blocked.blocked, true);
+  assert.equal(blocked.report.enterprisePolicy.action, 'warn_and_confirm');
+  assert.equal(allowed.allowed, true);
+});
+
+test('enterprise policy blocks direct gemini access without the approved gateway', async () => {
+  const shield = new BlackwallShield();
+  const adapter = createGeminiAdapter({
+    client: {
+      models: {
+        generate_content: () => ({ text: 'safe' }),
+      },
+    },
+    model: 'gemini-2.5-pro',
+  });
+
+  const result = await shield.protectWithAdapter({
+    adapter,
+    messages: [{ role: 'user', content: 'Hello' }],
+    metadata: { gateway_source: 'direct' },
+  });
+
+  assert.equal(result.blocked, true);
+  assert.match(result.reason, /Direct model access is not allowed/);
+});

@@ -52,6 +52,8 @@ export interface ShieldOptions {
   preset?: string | null;
   policyPack?: string | null;
   shadowMode?: boolean;
+  enterprisePolicy?: Record<string, unknown> | null;
+  enterprisePolicyPath?: string | null;
   routePolicies?: Array<{ route: string | RegExp | ((route: string, metadata: Record<string, unknown>) => boolean); options: Record<string, unknown> }>;
   customPromptDetectors?: Array<(payload: Record<string, unknown>) => Record<string, unknown> | Array<Record<string, unknown>> | null>;
   onTelemetry?: (event: Record<string, unknown>) => void | Promise<void>;
@@ -216,6 +218,9 @@ export function buildPowerBIRecord(event?: Record<string, unknown>): Record<stri
 export function buildComplianceEventBundle(event?: Record<string, unknown>): Record<string, unknown>;
 export function sanitizeAuditEvent(event?: Record<string, unknown>, options?: Record<string, unknown>): Record<string, unknown>;
 export function detectOperationalDrift(previousSummary?: Record<string, unknown>, currentSummary?: Record<string, unknown>): Record<string, unknown>;
+export function detectEnterpriseFindings(text: unknown, options?: Record<string, unknown>): Record<string, unknown>;
+export function loadEnterprisePolicy(options?: Record<string, unknown>): Record<string, unknown>;
+export function evaluateEnterprisePolicy(options?: Record<string, unknown>): Record<string, unknown>;
 export function buildTransparencyReport(input?: Record<string, unknown>): Record<string, unknown>;
 export function generateCoverageReport(options?: Record<string, unknown>): Record<string, unknown>;
 export function suggestPolicyOverride(input?: Record<string, unknown>): Record<string, unknown> | null;

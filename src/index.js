@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const RED_TEAM_PROMPT_LIBRARY = require('./red_team_prompts.json');
+const DEFAULT_ENTERPRISE_POLICY = require('./enterprise_policy.json');
 const {
   createOpenAIAdapter,
   createAnthropicAdapter,
@@ -45,6 +46,68 @@ const FIELD_HINTS = [
   'dob',
   'birth',
   'tfn',
+];
+
+const ENTERPRISE_ACTION_ORDER = Object.freeze({
+  allow: 0,
+  mask: 1,
+  warn_and_confirm: 2,
+  route_for_review: 3,
+  block: 4,
+});
+const ENTERPRISE_DETECTOR_RULES = [
+  {
+    type: 'financial_value',
+    placeholder: 'FINANCIAL_VALUE',
+    regexes: [
+      /(?:aud|usd|eur|gbp|\$)\s?\d[\d,]*(?:\.\d+)?\s?(?:k|m|b|million|billion|thousand)?\s+(?:ebitda|revenue|arr|forecast|guidance|margin|opex|capex|budget|run\s?rate)\b/gi,
+      /\b(?:aud|usd|eur|gbp|\$)\s?\d[\d,]*(?:\.\d+)?\s?(?:k|m|b|million|billion|thousand)?\s+(?:ebitda|revenue|arr|forecast|guidance|margin|opex|capex|budget|run\s?rate)\b/gi,
+      /\b(?:ebitda|revenue|arr|margin|opex|capex|budget|run\s?rate)\s+(?:of\s+)?(?:aud|usd|eur|gbp|\$)\s?\d[\d,]*(?:\.\d+)?\s?(?:k|m|b|million|billion|thousand)?\b/gi,
+    ],
+  },
+  {
+    type: 'employee_identifier',
+    placeholder: 'EMPLOYEE_ID',
+    regexes: [/\b(?:employee|staff|worker|personnel)\s*(?:id|identifier|number|no\.?)[:#\s-]*[A-Z]{0,3}\d{3,10}\b/gi],
+  },
+  {
+    type: 'customer_account_number',
+    placeholder: 'ACCOUNT_NUMBER',
+    regexes: [/\b(?:customer|client|account)\s*(?:id|identifier|number|no\.?)[:#\s-]*[A-Z]{0,4}\d{4,12}\b/gi],
+  },
+  {
+    type: 'payroll_salary',
+    placeholder: 'PAYROLL_DATA',
+    regexes: [/\b(?:payroll|salary|salaries|compensation|bonus|wage|wages|base pay|remuneration)\b(?:.{0,40}\b(?:aud|usd|eur|gbp|\$|\d{2,3}(?:,\d{3})*))?/gi],
+  },
+  {
+    type: 'financial_forecast',
+    placeholder: 'FINANCIAL_FORECAST',
+    regexes: [
+      /\b(?:forecast|guidance|projection|projected|outlook|budget|plan)\b.{0,40}\b(?:revenue|ebitda|earnings|arr|margin|opex|capex)\b/gi,
+      /\b(?:revenue|ebitda|earnings|arr|margin|opex|capex)\b.{0,40}\b(?:forecast|guidance|projection|projected|outlook|budget|plan)\b/gi,
+    ],
+  },
+  {
+    type: 'board_material',
+    placeholder: 'BOARD_MATERIAL',
+    regexes: [/\b(?:board deck|board paper|board materials?|board meeting|board minutes?|directors?' pack|directors?' briefing)\b/gi],
+  },
+  {
+    type: 'mna_material',
+    placeholder: 'MNA_MATERIAL',
+    regexes: [/\b(?:m&a|merger|acquisition|acquire|divestiture|due diligence|term sheet|loi|letter of intent|target company)\b/gi],
+  },
+  {
+    type: 'legal_confidential_material',
+    placeholder: 'LEGAL_CONFIDENTIAL',
+    regexes: [/\b(?:privileged|attorney[- ]client|legal advice|litigation|lawsuit|claim|settlement|arbitration|subpoena|case file)\b/gi],
+  },
+  {
+    type: 'project_codename',
+    placeholder: 'PROJECT_CODENAME',
+    regexes: [/\b(?:project|codename|code name|initiative|program)\s+[A-Z][A-Za-z0-9_-]{2,}\b/g],
+  },
 ];
 
 const HOMOGLYPH_MAP = {
@@ -612,6 +675,161 @@ function sanitizeAuditEvent(event = {}, options = {}) {
     clone.report.sensitiveData.findings = (clone.report.sensitiveData.findings || []).map((finding) => ({ type: finding.type }));
   }
   return clone;
+}
+
+function loadEnterprisePolicy({ policy = null, policyPath = null } = {}) {
+  if (policy && typeof policy === 'object' && !Array.isArray(policy)) {
+    return JSON.parse(JSON.stringify(policy));
+  }
+  if (policyPath) {
+    try {
+      return JSON.parse(fs.readFileSync(policyPath, 'utf8'));
+    } catch (_error) {
+      return JSON.parse(JSON.stringify(DEFAULT_ENTERPRISE_POLICY));
+    }
+  }
+  return JSON.parse(JSON.stringify(DEFAULT_ENTERPRISE_POLICY));
+}
+
+function normalizeEnterpriseMetadata(metadata = {}) {
+  return {
+    role: String(metadata.role || metadata.user_role || metadata.userRole || '').trim().toLowerCase(),
+    business_unit: String(metadata.business_unit || metadata.businessUnit || '').trim().toLowerCase(),
+    use_case: String(metadata.use_case || metadata.useCase || metadata.feature || '').trim().toLowerCase(),
+    environment: String(metadata.environment || metadata.env || '').trim().toLowerCase(),
+    gateway_source: String(metadata.gateway_source || metadata.gatewaySource || '').trim().toLowerCase(),
+  };
+}
+
+function replaceEnterpriseMatches(text = '', findings = []) {
+  let masked = String(text || '');
+  const vault = {};
+  const applied = [];
+  const counters = {};
+  for (const finding of findings) {
+    const match = String((finding && finding.match) || '');
+    if (!match || !masked.includes(match)) continue;
+    const category = String((finding && finding.type) || 'enterprise');
+    counters[category] = (counters[category] || 0) + 1;
+    const token = `[${String((finding && finding.placeholder) || category).toUpperCase()}_${counters[category]}]`;
+    masked = masked.replace(match, token);
+    vault[token] = match;
+    applied.push({ ...finding, masked: token });
+  }
+  return { masked, findings: applied, vault };
+}
+
+function detectEnterpriseFindings(text, { metadata = {}, direction = 'input', allowlist = [] } = {}) {
+  const raw = sanitizeText(text);
+  const findings = [];
+  const seen = new Set();
+  const allowTerms = new Set((Array.isArray(allowlist) ? allowlist : []).filter(Boolean).map((item) => String(item).toLowerCase()));
+  const metadataScope = normalizeEnterpriseMetadata(metadata);
+  for (const rule of ENTERPRISE_DETECTOR_RULES) {
+    for (const regex of rule.regexes) {
+      for (const match of raw.matchAll(cloneRegex(regex))) {
+        const matched = sanitizeText(match[0] || '');
+        if (!matched || allowTerms.has(matched.toLowerCase())) continue;
+        const key = `${rule.type}:${matched.toLowerCase()}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        findings.push({
+          type: rule.type,
+          match: matched,
+          placeholder: rule.placeholder,
+          direction,
+          metadataScope,
+        });
+      }
+    }
+  }
+  return {
+    text: raw,
+    findings,
+    categories: [...new Set(findings.map((item) => item.type))].sort(),
+    hasSensitiveData: findings.length > 0,
+  };
+}
+
+function metadataMatchesScope(rule = {}, metadata = {}) {
+  const scope = rule.metadata || {};
+  const normalized = normalizeEnterpriseMetadata(metadata);
+  return Object.entries(scope).every(([key, expected]) => {
+    const actual = normalized[String(key)] || '';
+    const expectedValues = Array.isArray(expected) ? expected : [expected];
+    return !!actual && expectedValues.map((item) => String(item).trim().toLowerCase()).includes(actual);
+  });
+}
+
+function evaluateEnterprisePolicy({ findings = [], metadata = {}, direction = 'input', policy = null } = {}) {
+  const resolved = loadEnterprisePolicy({ policy });
+  const categories = [...new Set((Array.isArray(findings) ? findings : []).map((item) => item && item.type).filter(Boolean))].sort();
+  const matchedRules = [];
+  let selectedRule = null;
+  for (const rule of resolved.rules || []) {
+    const directions = Array.isArray(rule.directions) ? rule.directions : ['input', 'output'];
+    if (!directions.includes(direction)) continue;
+    if (!metadataMatchesScope(rule, metadata)) continue;
+    const ruleCategories = new Set((rule.categories || []).map(String));
+    if (!categories.some((category) => ruleCategories.has(category))) continue;
+    matchedRules.push(rule);
+    if (!selectedRule) {
+      selectedRule = rule;
+      continue;
+    }
+    const currentPriority = Number(rule.priority || 0);
+    const selectedPriority = Number(selectedRule.priority || 0);
+    const currentAction = String(rule.action || 'allow');
+    const selectedAction = String(selectedRule.action || 'allow');
+    if (currentPriority > selectedPriority || (currentPriority === selectedPriority && ENTERPRISE_ACTION_ORDER[currentAction] > ENTERPRISE_ACTION_ORDER[selectedAction])) {
+      selectedRule = rule;
+    }
+  }
+  const action = String((selectedRule && selectedRule.action) || ((findings || []).length ? 'mask' : 'allow'));
+  const acknowledged = !!(metadata.confirmed_sensitive_operation || metadata.sensitive_acknowledged || metadata.policy_confirmation);
+  const reviewApproved = !!(metadata.review_approved || metadata.policy_review_approved);
+  const requiresConfirmation = action === 'warn_and_confirm' && !acknowledged;
+  const requiresReview = action === 'route_for_review' && !reviewApproved;
+  const blocked = action === 'block' || requiresConfirmation || requiresReview;
+  return {
+    action,
+    blocked,
+    requiresConfirmation,
+    requiresReview,
+    matchedRules,
+    selectedRule,
+    selectedCategories: selectedRule ? (selectedRule.categories || []).filter((item) => categories.includes(item)).sort() : [],
+    categories,
+    userMessage: (selectedRule && selectedRule.message) || ((findings || []).length ? 'Sensitive content was detected and masked.' : null),
+  };
+}
+
+function inspectProviderGateway({ metadata = {}, provider = null, policy = null } = {}) {
+  const resolved = loadEnterprisePolicy({ policy });
+  const gateway = resolved.provider_gateway || {};
+  const providerName = String(provider || metadata.requested_provider || metadata.requestedProvider || metadata.provider || '').trim().toLowerCase();
+  if (!providerName) return { allowed: true, provider: null, reason: null };
+  const metadataKey = String(gateway.metadata_key || 'gateway_source');
+  const approvedSources = gateway.approved_sources || {};
+  const normalized = normalizeEnterpriseMetadata(metadata);
+  const gatewaySource = normalized[metadataKey] || '';
+  const approved = approvedSources[providerName];
+  if (approved && !approved.map((item) => String(item).trim().toLowerCase()).includes(gatewaySource)) {
+    return {
+      allowed: false,
+      provider: providerName,
+      reason: gateway.blocked_message || `Direct access to ${providerName} is not allowed`,
+      gatewaySource: gatewaySource || null,
+      approvedSources: approved,
+    };
+  }
+  return {
+    allowed: true,
+    provider: providerName,
+    reason: null,
+    gatewaySource: gatewaySource || null,
+    approvedSources: approved || null,
+  };
 }
 
 class RetrievalTrustScorer {
@@ -1618,6 +1836,8 @@ class BlackwallShield {
       auditTrail: options.auditTrail === undefined ? new AuditTrail({ secret: options.attestationSecret || 'blackwall-attestation-secret' }) : options.auditTrail,
       identityResolver: null,
       webhookUrl: null,
+      enterprisePolicy: null,
+      enterprisePolicyPath: null,
       ...options,
     };
   }
@@ -1632,11 +1852,20 @@ class BlackwallShield {
 
   inspectText(text) {
     const effectiveOptions = resolveEffectiveShieldOptions(this.options);
+    const enterprisePolicy = loadEnterprisePolicy({
+      policy: effectiveOptions.enterprisePolicy,
+      policyPath: effectiveOptions.enterprisePolicyPath,
+    });
     const pii = maskValue(text, effectiveOptions);
     let injection = detectPromptInjection(text, effectiveOptions);
     injection = applyCustomPromptDetectors(injection, String(text || ''), effectiveOptions, {});
     injection = applyPluginDetectors(injection, String(text || ''), effectiveOptions, {});
     injection = applyPromptRuleSuppressions(injection, effectiveOptions.suppressPromptRules);
+    const enterprise = detectEnterpriseFindings(pii.original || sanitizeText(text, effectiveOptions.maxLength), {
+      metadata: {},
+      direction: 'input',
+      allowlist: ((enterprisePolicy.allowlists || {}).terms || []),
+    });
     return {
       sanitized: pii.original || sanitizeText(text, effectiveOptions.maxLength),
       promptInjection: injection,
@@ -1644,6 +1873,13 @@ class BlackwallShield {
         findings: pii.findings,
         hasSensitiveData: pii.hasSensitiveData,
       },
+      enterpriseFindings: enterprise.findings,
+      enterprisePolicy: evaluateEnterprisePolicy({
+        findings: [...pii.findings, ...enterprise.findings],
+        metadata: {},
+        direction: 'input',
+        policy: enterprisePolicy,
+      }),
     };
   }
 
@@ -1674,6 +1910,10 @@ class BlackwallShield {
 
   async guardModelRequest({ messages = [], metadata = {}, allowSystemMessages = this.options.allowSystemMessages, comparePolicyPacks = [] } = {}) {
     const effectiveOptions = resolveEffectiveShieldOptions(this.options, metadata);
+    const enterprisePolicy = loadEnterprisePolicy({
+      policy: effectiveOptions.enterprisePolicy,
+      policyPath: effectiveOptions.enterprisePolicyPath,
+    });
     const effectiveAllowSystemMessages = allowSystemMessages === this.options.allowSystemMessages
       ? effectiveOptions.allowSystemMessages
       : allowSystemMessages;
@@ -1689,6 +1929,34 @@ class BlackwallShield {
       entityDetectors: effectiveOptions.entityDetectors,
       detectNamedEntities: effectiveOptions.detectNamedEntities,
     });
+    const enterpriseFindings = [];
+    const enterpriseVault = {};
+    const enterpriseMaskedMessages = [];
+    const allowTerms = ((enterprisePolicy.allowlists || {}).terms || []);
+    for (const message of masked.masked) {
+      if (message.role === 'system') {
+        enterpriseMaskedMessages.push(message);
+        continue;
+      }
+      const enterpriseScan = detectEnterpriseFindings(message.content || '', {
+        metadata,
+        direction: 'input',
+        allowlist: allowTerms,
+      });
+      const replaced = replaceEnterpriseMatches(message.content || '', enterpriseScan.findings);
+      enterpriseFindings.push(...replaced.findings);
+      Object.assign(enterpriseVault, replaced.vault);
+      enterpriseMaskedMessages.push({
+        ...message,
+        content: replaced.masked,
+      });
+    }
+    if (enterpriseFindings.length) {
+      masked.masked = enterpriseMaskedMessages;
+      masked.findings.push(...enterpriseFindings);
+      Object.assign(masked.vault, enterpriseVault);
+      masked.hasSensitiveData = true;
+    }
     const promptCandidate = normalizedMessages.filter((msg) => msg.role !== 'assistant');
     const sessionBuffer = effectiveOptions.sessionBuffer;
     if (sessionBuffer && typeof sessionBuffer.record === 'function') {
@@ -1730,6 +1998,15 @@ class BlackwallShield {
         messages: normalizedMessages,
       })
       : { allowed: true, estimatedTokens: estimateTokenCount(normalizedMessages) };
+    const enterpriseDecision = evaluateEnterprisePolicy({
+      findings: masked.findings,
+      metadata,
+      direction: 'input',
+      policy: enterprisePolicy,
+    });
+    const providerGate = inspectProviderGateway({ metadata, policy: enterprisePolicy });
+    const enterpriseWouldBlock = enterpriseDecision.blocked || !providerGate.allowed;
+    const enterpriseReason = !providerGate.allowed ? providerGate.reason : enterpriseDecision.userMessage;
 
     const report = {
       package: 'blackwall-llm-shield-js',
@@ -1743,15 +2020,20 @@ class BlackwallShield {
       },
       enforcement: {
         shadowMode: effectiveOptions.shadowMode,
-        wouldBlock: wouldBlock || !budgetResult.allowed,
-        blocked: shouldBlock || !budgetResult.allowed,
+        wouldBlock: wouldBlock || !budgetResult.allowed || enterpriseWouldBlock,
+        blocked: shouldBlock || !budgetResult.allowed || (enterpriseWouldBlock && !effectiveOptions.shadowMode),
         threshold,
+        enterpriseAction: enterpriseDecision.action,
       },
       trajectory: threatTrajectory,
       provenance,
       policyPack: primaryPolicy ? primaryPolicy.name : null,
       policyComparisons,
       tokenBudget: budgetResult,
+      enterprisePolicy: {
+        ...enterpriseDecision,
+        providerGateway: providerGate,
+      },
       coreInterfaces: CORE_INTERFACES,
       routePolicy: effectiveOptions.routePolicy ? {
         route: metadata.route || metadata.path || null,
@@ -1775,28 +2057,30 @@ class BlackwallShield {
 
     await this.emitTelemetry(createTelemetryEvent('llm_request_reviewed', {
       metadata,
-      blocked: shouldBlock || !budgetResult.allowed,
+      blocked: shouldBlock || !budgetResult.allowed || (enterpriseWouldBlock && !effectiveOptions.shadowMode),
       shadowMode: effectiveOptions.shadowMode,
       report,
     }));
 
-    if (shouldNotify || wouldBlock) {
+    if (shouldNotify || wouldBlock || enterpriseWouldBlock) {
       await this.notify({
-        type: shouldBlock ? 'llm_request_blocked' : (wouldBlock ? 'llm_request_shadow_blocked' : 'llm_request_risky'),
-        severity: (wouldBlock || trajectoryBlocked) ? injection.level : 'warning',
-        reason: trajectoryBlocked ? 'Conversation threat trajectory exceeded policy threshold' : (wouldBlock ? 'Prompt injection threshold exceeded' : 'Prompt injection risk detected'),
+        type: (shouldBlock || (enterpriseWouldBlock && !effectiveOptions.shadowMode)) ? 'llm_request_blocked' : ((wouldBlock || enterpriseWouldBlock) ? 'llm_request_shadow_blocked' : 'llm_request_risky'),
+        severity: (wouldBlock || trajectoryBlocked) ? injection.level : (enterpriseWouldBlock ? 'high' : 'warning'),
+        reason: enterpriseWouldBlock
+          ? enterpriseReason
+          : (trajectoryBlocked ? 'Conversation threat trajectory exceeded policy threshold' : (wouldBlock ? 'Prompt injection threshold exceeded' : 'Prompt injection risk detected')),
         report,
       });
     }
 
-    const finalBlocked = shouldBlock || !budgetResult.allowed;
+    const finalBlocked = shouldBlock || !budgetResult.allowed || (enterpriseWouldBlock && !effectiveOptions.shadowMode);
     const attestation = this.options.auditTrail && typeof this.options.auditTrail.issueAttestation === 'function'
       ? this.options.auditTrail.issueAttestation({ metadata, blocked: finalBlocked })
       : null;
     return {
       allowed: !finalBlocked,
       blocked: finalBlocked,
-      reason: !budgetResult.allowed ? budgetResult.reason : (shouldBlock ? 'Prompt injection risk exceeded policy threshold' : null),
+      reason: !budgetResult.allowed ? budgetResult.reason : ((enterpriseWouldBlock && !effectiveOptions.shadowMode) ? enterpriseReason : (shouldBlock ? 'Prompt injection risk exceeded policy threshold' : null)),
       messages: masked.masked,
       report,
       vault: masked.vault,
@@ -1810,6 +2094,10 @@ class BlackwallShield {
 
   async reviewModelResponse({ output, metadata = {}, outputFirewall = null, firewallOptions = {} } = {}) {
     const effectiveOptions = resolveEffectiveShieldOptions(this.options, metadata);
+    const enterprisePolicy = loadEnterprisePolicy({
+      policy: effectiveOptions.enterprisePolicy,
+      policyPath: effectiveOptions.enterprisePolicyPath,
+    });
     const primaryPolicy = resolvePolicyPack(effectiveOptions.policyPack);
     const firewall = outputFirewall || new OutputFirewall({
       riskThreshold: (primaryPolicy && primaryPolicy.outputRiskThreshold) || 'high',
@@ -1828,6 +2116,26 @@ class BlackwallShield {
       ...firewallOptions,
     });
     review = applyPluginOutputScans(review, output, effectiveOptions, metadata);
+    const enterpriseScan = detectEnterpriseFindings(typeof review.maskedOutput === 'string' ? review.maskedOutput : output, {
+      metadata,
+      direction: 'output',
+      allowlist: ((enterprisePolicy.allowlists || {}).terms || []),
+    });
+    const enterpriseReplaced = replaceEnterpriseMatches(typeof review.maskedOutput === 'string' ? review.maskedOutput : String(output || ''), enterpriseScan.findings);
+    const enterpriseDecision = evaluateEnterprisePolicy({
+      findings: [...(review.piiFindings || []), ...enterpriseReplaced.findings],
+      metadata,
+      direction: 'output',
+      policy: enterprisePolicy,
+    });
+    if (enterpriseReplaced.findings.length && typeof review.maskedOutput === 'string') {
+      review.maskedOutput = enterpriseReplaced.masked;
+      review.piiFindings = [...(review.piiFindings || []), ...enterpriseReplaced.findings];
+    }
+    if (enterpriseDecision.blocked) {
+      review.allowed = false;
+      if (severityWeight('high') > severityWeight(review.severity || 'low')) review.severity = 'high';
+    }
     const provenance = effectiveOptions.provenanceGraph && typeof effectiveOptions.provenanceGraph.append === 'function'
       ? effectiveOptions.provenanceGraph.append({
         agentId: metadata.agentId || metadata.agent_id || metadata.model || 'model',
@@ -1850,6 +2158,7 @@ class BlackwallShield {
           complianceMap: mapCompliance(review.findings.map((item) => item.id)),
         },
         provenance,
+        enterprisePolicy: enterpriseDecision,
       },
     };
 
@@ -1863,7 +2172,7 @@ class BlackwallShield {
       await this.notify({
         type: !review.allowed ? 'llm_output_blocked' : 'llm_output_risky',
         severity: review.severity,
-        reason: !review.allowed ? 'Model output failed Blackwall review' : 'Model output triggered Blackwall findings',
+        reason: enterpriseDecision.blocked ? enterpriseDecision.userMessage : (!review.allowed ? 'Model output failed Blackwall review' : 'Model output triggered Blackwall findings'),
         report,
       });
     }
@@ -1946,9 +2255,13 @@ class BlackwallShield {
     if (!adapter || typeof adapter.invoke !== 'function') {
       throw new TypeError('adapter.invoke must be a function');
     }
+    const requestMetadata = {
+      ...metadata,
+      requested_provider: metadata.requested_provider || metadata.requestedProvider || adapter.provider || null,
+    };
     return this.protectModelCall({
       messages,
-      metadata,
+      metadata: requestMetadata,
       allowSystemMessages,
       comparePolicyPacks,
       outputFirewall,
@@ -3505,6 +3818,9 @@ module.exports = {
   buildComplianceEventBundle,
   sanitizeAuditEvent,
   detectOperationalDrift,
+  detectEnterpriseFindings,
+  loadEnterprisePolicy,
+  evaluateEnterprisePolicy,
   DataClassificationGate,
   ProviderRoutingPolicy,
   ApprovalInboxModel,
