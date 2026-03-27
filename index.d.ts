@@ -98,6 +98,9 @@ export class AgentIdentityRegistry {
   verifySignedPassport(passport?: Record<string, unknown>): Record<string, unknown>;
   issuePassportToken(agentId: string, options?: Record<string, unknown>): string;
   verifyPassportToken(token: string): Record<string, unknown>;
+  issueAgenticJwt(agentId: string, options?: Record<string, unknown>): string;
+  verifyAgenticJwt(token: string): Record<string, unknown>;
+  verifyTaskScope(passport?: Record<string, unknown>, action?: string | null): Record<string, unknown>;
 }
 
 export class AgenticCapabilityGater {
@@ -126,6 +129,17 @@ export class QuorumApprovalEngine {
   evaluate(input?: Record<string, unknown>): Promise<Record<string, unknown>> | Record<string, unknown>;
 }
 
+export class ByzantineSwarmConsensus {
+  constructor(options?: Record<string, unknown>);
+  evaluate(input?: Record<string, unknown>): Record<string, unknown>;
+}
+
+export class AlignmentCreditLedger {
+  constructor(options?: Record<string, unknown>);
+  record(agentId: string, event?: Record<string, unknown>): Record<string, unknown>;
+  snapshot(agentId: string): Record<string, unknown>;
+}
+
 export class ConversationThreatTracker {
   constructor(options?: Record<string, unknown>);
   record(sessionId: string, injection?: Record<string, unknown>): Record<string, unknown> | null;
@@ -133,15 +147,30 @@ export class ConversationThreatTracker {
   clear(sessionId: string): void;
 }
 
+export class AdaptiveThreatMesh {
+  constructor(options?: Record<string, unknown>);
+  observe(injection?: Record<string, unknown>): Record<string, unknown>;
+  apply(injection?: Record<string, unknown>): Record<string, unknown>;
+  snapshot(): Record<string, unknown>;
+  exportSignatoryAntigens(): Record<string, unknown>;
+  importSignatoryAntigens(bundle?: Record<string, unknown>): Record<string, unknown>;
+}
+
 export class DigitalTwinOrchestrator {
   constructor(options?: Record<string, unknown>);
   generate(): Record<string, unknown>;
   static fromToolPermissionFirewall(firewall: unknown): DigitalTwinOrchestrator;
+  simulateAttack(prompt?: string, metadata?: Record<string, unknown>): Record<string, unknown>;
 }
 
 export class AdversarialMutationEngine {
   mutate(prompt?: string): Array<Record<string, unknown>>;
   hardenCorpus(input?: Record<string, unknown>): Record<string, unknown>;
+}
+
+export class AutonomousAdversarialAuditor {
+  constructor(options?: Record<string, unknown>);
+  evaluate(input?: { shield?: BlackwallShield }): Promise<Record<string, unknown>>;
 }
 
 export class PromptProvenanceGraph {
@@ -159,6 +188,11 @@ export class DataClassificationGate {
 export class ProviderRoutingPolicy {
   constructor(options?: Record<string, unknown>);
   choose(input?: Record<string, unknown>): Record<string, unknown>;
+}
+
+export class WorldviewPolicyRouter {
+  constructor(options?: Record<string, unknown>);
+  resolve(input?: Record<string, unknown>): Record<string, unknown>;
 }
 
 export class SovereignRoutingEngine {
@@ -194,15 +228,67 @@ export class PolicyLearningLoop {
   buildTransparencyReport(input?: Record<string, unknown>): Record<string, unknown>;
 }
 
+export class WorkflowStateGuard {
+  constructor(options?: Record<string, unknown>);
+  inspect(input?: Record<string, unknown>): Record<string, unknown>;
+}
+
 export class RetrievalSanitizer {
   constructor(options?: Record<string, unknown>);
   sanitizeDocuments(documents: Array<Record<string, unknown>>): Array<Record<string, unknown>>;
+}
+
+export class HoneyContextDeceptionPack {
+  constructor(options?: Record<string, unknown>);
+  generate(injection?: Record<string, unknown>, sessionId?: string | null): Record<string, unknown>;
 }
 
 export class AuditTrail {
   constructor(options?: Record<string, unknown>);
   record(event?: Record<string, unknown>): Record<string, unknown>;
   summarize(): Record<string, unknown>;
+}
+
+export class IntentSovereigntyEngine {
+  constructor(options?: Record<string, unknown>);
+  inspect(input?: {
+    requestedIntent?: string;
+    reasoning?: string;
+    plannedTools?: string[];
+    metadata?: Record<string, unknown>;
+  }): Record<string, unknown>;
+}
+
+export class CrossModalConsistencyGuard {
+  constructor(options?: Record<string, unknown>);
+  inspect(input?: {
+    image?: Record<string, unknown>;
+    systemPrompt?: string;
+  }): Record<string, unknown>;
+}
+
+export class BehavioralChaosEngineer {
+  constructor(options?: Record<string, unknown>);
+  evaluate(input?: { shield?: BlackwallShield }): Promise<Record<string, unknown>>;
+}
+
+export class TruthSovereignReflector {
+  constructor(options?: Record<string, unknown>);
+  reflect(input?: Record<string, unknown>): Record<string, unknown>;
+}
+
+export class PromptFingerprintEngine {
+  inspect(text?: string, options?: Record<string, unknown>): Record<string, unknown>;
+}
+
+export class TemporalSandboxOrchestrator {
+  constructor(options?: Record<string, unknown>);
+  inspect(input?: Record<string, unknown>): Record<string, unknown>;
+}
+
+export class PolymorphicVault {
+  constructor(vault?: Record<string, string>);
+  resolve(maskedText?: string, rules?: Record<string, unknown>): string;
 }
 
 export const SHIELD_PRESETS: Record<string, Record<string, unknown>>;

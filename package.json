@@ -1,6 +1,6 @@
 {
   "name": "@vpdeva/blackwall-llm-shield-js",
-  "version": "0.6.6",
+  "version": "0.6.11",
   "description": "Security middleware for Node.js and Next.js LLM apps. Blocks prompt injection, masks PII, inspects outputs, and gates agent tools.",
   "license": "Apache-2.0",
   "author": "Vish <hello@vish.au> (https://vish.au)",
@@ -59,13 +59,13 @@
     "type": "git",
     "url": "git+https://github.com/vpdeva/blackwall-llm-shield-js.git"
   },
-  "homepage": "https://vish.au",
+  "homepage": "https://github.com/vpdeva/blackwall-llm-shield-js",
   "bugs": {
     "url": "https://github.com/vpdeva/blackwall-llm-shield-js/issues"
   },
   "funding": {
     "type": "Buy Vish a coffee",
-    "url": "https://vish.au"
+    "url": "https://buymeacoffee.com/vishdevarae"
   },
   "keywords": [
     "llm",

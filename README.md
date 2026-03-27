@@ -17,7 +17,7 @@ const guarded = await shield.guardModelRequest({ messages: [{ role: 'user', cont
 console.log(guarded.allowed, guarded.report.riskLevel);
 ```
 
-Links: [Comparison guide](./wiki/Blackwall-vs-OpenAI-Moderation.md) | [Contributing](./CONTRIBUTING.md) | [Python package](https://pypi.org/project/vpdeva-blackwall-llm-shield-python/) | [Social preview asset](./assets/social-preview.svg)
+Links: [Comparison guide](./wiki/Blackwall-vs-OpenAI-Moderation.md) | [Contributing](./CONTRIBUTING.md) | [Python package](https://pypi.org/project/blackwall-llm-shield-python/) | [Social preview asset](./assets/social-preview.svg)
 
 ## Why Teams Reach For It
 
@@ -38,6 +38,14 @@ Links: [Comparison guide](./wiki/Blackwall-vs-OpenAI-Moderation.md) | [Contribut
 - Sanitizes RAG documents before they are injected into context
 - Generates signed audit events and dashboard-friendly summaries
 - Supports canary token workflows, synthetic PII replacement, built-in red-team evaluation, framework helpers, and a bundled jailbreak corpus
+- Enforces intent sovereignty with cognitive locks when reasoning or tool plans drift from user intent
+- Redacts untrusted image metadata and OCR text with cross-modal environment-injection defense
+- Issues task-scoped agent passports and verifies MCP/tool actions against zero-trust identity boundaries
+- Supports agentic JWT-style identity exchange and capability-manifest enforcement at the tool boundary
+- Blocks business-logic abuse with workflow-state validation before high-impact actions execute
+- Shares decaying signatory antigens through an adaptive threat mesh instead of relying only on static rule updates
+- Ships an `agentGovernance` preset and `AutonomousAdversarialAuditor` for control-plane style agent security
+- Adds swarm-grade governance primitives like Byzantine consensus, alignment credit ledgers, worldview routing, and truth reflection
 
 ## Install
 
@@ -113,6 +121,14 @@ Enterprise deployments can also enrich emitted events with SSO/user context and 
 
 `OutputFirewall` can compare responses against retrieved documents and flag hallucination-style unsupported claims or unprofessional tone.
 
+### Autonomous governance and agent security
+
+Use `IntentSovereigntyEngine` to detect reasoning drift and trigger a cognitive lock before a tool call happens. Pair `CrossModalConsistencyGuard` with `ImageMetadataScanner` and `VisualInstructionDetector` when your app ingests screenshots, OCR, alt text, or other perceptual inputs that may carry indirect instructions.
+
+For autonomous agents, combine `AgentIdentityRegistry`, `MCPSecurityProxy`, and task-scoped passports so tools verify what the agent is allowed to do instead of trusting the model's final text alone. Use `AdaptiveThreatMesh` to export and import decaying signatory antigens across deployments, and run `BehavioralChaosEngineer` to continuously red-team your current shield configuration under controlled failure scenarios.
+
+For stateful business workflows, add `WorkflowStateGuard` to `ToolPermissionFirewall` so high-impact actions like transfers, sends, or deletes require prior approvals, recorded sequence steps, and evidence keys before execution is even considered.
+
 ### Lightweight integrations
 
 Use `createExpressMiddleware()`, `createLangChainCallbacks()`, or `createLlamaIndexCallback()` to drop Blackwall into existing app and orchestration flows faster.
@@ -168,6 +184,7 @@ Recommended presets:
 - `documentIntake` for upload-heavy intake and review flows
 - `citizenServices` for identity-aware service delivery workflows
 - `internalOpsAgent` for internal operational assistants with shadow-first defaults
+- `agentGovernance` for zero-trust agent identity, business-logic validation, and high-sensitivity tool workflows
 
 ### Global Governance Pack
 
@@ -193,10 +210,19 @@ Use it to record signed events, summarize security activity, and power dashboard
 - `CrossModelConsensusWrapper` for automatic cross-model verification of high-impact actions
 - `QuorumApprovalEngine` for committee-based approvals and trust-score-aware multi-agent decisions
 - `DigitalTwinOrchestrator` for mock tool environments and sandbox simulations
+- `IntentSovereigntyEngine` for cognitive locks when reasoning or planned tools drift from the original task
+- `CrossModalConsistencyGuard` for indirect prompt-injection defense across OCR, captions, and image metadata
+- `BehavioralChaosEngineer` for built-in continuous chaos-style red-teaming
+- `AutonomousAdversarialAuditor` for packaged ghost-agent scenarios that probe passports, workflow skips, and retrieval abuse
+- `ByzantineSwarmConsensus` for BFT-style approval over agent swarms with malicious-node isolation
+- `AlignmentCreditLedger` for incentive-style scoring of transparent reasoning vs. capability hiding
+- `WorldviewPolicyRouter` for locale/domain-specific moral anchors and institutional norms
+- `TruthSovereignReflector` for hidden adversarial self-critique before trusting a final answer
 - `SovereignRoutingEngine` for local-vs-global provider routing based on data classification
 - `PolicyLearningLoop` plus `suggestPolicyOverride()` for narrow false-positive tuning suggestions after HITL approvals
 - `buildTransparencyReport()` for explainable operator and compliance artifacts
-- `AgentIdentityRegistry.issueSignedPassport()` and `issuePassportToken()` for signed agent identity exchange with capability manifests and lineage
+- `AgentIdentityRegistry.issueSignedPassport()`, `verifyTaskScope()`, and `issuePassportToken()` for signed agent identity exchange with task-scoped passports and lineage
+- `AdaptiveThreatMesh.exportSignatoryAntigens()` and `importSignatoryAntigens()` for distributed threat learning across fleets
 
 ## Example Workflows
 
