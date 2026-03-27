@@ -1,15 +1,13 @@
 # Blackwall LLM Shield
 
-Security middleware for LLM apps. Blocks prompt injection, masks PII, inspects outputs, and gates agent tools in JavaScript and Python.
+Security middleware for Node.js and Next.js LLM apps. Blocks prompt injection, masks PII, inspects outputs, and gates agent tools in JavaScript runtimes.
 
 [![npm version](https://img.shields.io/npm/v/%40vpdeva%2Fblackwall-llm-shield-js)](https://www.npmjs.com/package/@vpdeva/blackwall-llm-shield-js)
-[![PyPI version](https://img.shields.io/pypi/v/vpdeva-blackwall-llm-shield-python)](https://pypi.org/project/vpdeva-blackwall-llm-shield-python/)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 [![OWASP LLM coverage](./assets/owasp-coverage.svg)](./src/index.js)
 
 ```bash
 npm install @vpdeva/blackwall-llm-shield-js
-pip install vpdeva-blackwall-llm-shield-python
 ```
 
 ```js
@@ -19,7 +17,7 @@ const guarded = await shield.guardModelRequest({ messages: [{ role: 'user', cont
 console.log(guarded.allowed, guarded.report.riskLevel);
 ```
 
-Links: [Comparison guide](./wiki/Blackwall-vs-OpenAI-Moderation.md) | [Contributing](./CONTRIBUTING.md) | [Social preview asset](./assets/social-preview.svg)
+Links: [Comparison guide](./wiki/Blackwall-vs-OpenAI-Moderation.md) | [Contributing](./CONTRIBUTING.md) | [Python package](https://pypi.org/project/vpdeva-blackwall-llm-shield-python/) | [Social preview asset](./assets/social-preview.svg)
 
 ## Why Teams Reach For It
 
