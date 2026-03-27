@@ -1,6 +1,6 @@
 {
   "name": "@vpdeva/blackwall-llm-shield-js",
-  "version": "0.6.11",
+  "version": "0.7.0",
   "description": "Security middleware for Node.js and Next.js LLM apps. Blocks prompt injection, masks PII, inspects outputs, and gates agent tools.",
   "license": "Apache-2.0",
   "author": "Vish <hello@vish.au> (https://vish.au)",

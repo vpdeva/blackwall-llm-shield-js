@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.0
+
+### Minor Changes
+
+- afa938e: Add provider adapters, route-aware policy overrides, and preset-based configuration ergonomics.
+
 ## Unreleased
 
 - Updated the default OWASP LLM coverage report and checked-in badge to reflect full built-in framework coverage across the OWASP LLM Top 10 2025 categories.
