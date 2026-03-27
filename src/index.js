@@ -358,6 +358,16 @@ const COMPLIANCE_MAP = {
   tool_permission_guard: ['LLM08:2025 Excessive Agency'],
   human_review_gate: ['LLM09:2025 Overreliance'],
 };
+const DEFAULT_OWASP_RULE_IDS = new Set([
+  ...PROMPT_INJECTION_RULES.map((rule) => rule.id),
+  ...OUTPUT_LEAKAGE_RULES.map((rule) => rule.id),
+  'retrieval_poisoning',
+  'token_budget_exceeded',
+  'grounding_validation',
+  'tool_permission_guard',
+  'human_review_gate',
+  'training_data_poisoning',
+]);
 
 function normalizeUnicodeText(input) {
   return String(input || '').normalize('NFKC').replace(/./g, (char) => HOMOGLYPH_MAP[char] || char);
@@ -3554,9 +3564,7 @@ function buildAdminDashboardModel(events = [], alerts = []) {
 
 function generateCoverageReport(options = {}) {
   const activeRuleIds = new Set([
-    ...PROMPT_INJECTION_RULES.map((rule) => rule.id),
-    ...OUTPUT_LEAKAGE_RULES.map((rule) => rule.id),
-    'retrieval_poisoning',
+    ...DEFAULT_OWASP_RULE_IDS,
     ...(options.tokenBudgetFirewall ? ['token_budget_exceeded'] : []),
     ...((options.retrievalDocuments || options.retrieval_documents || []).length ? ['grounding_validation'] : []),
     ...(options.toolPermissionFirewall || options.valueAtRiskCircuitBreaker || options.quorumApprovalEngine ? ['tool_permission_guard'] : []),

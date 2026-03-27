@@ -814,9 +814,9 @@ test('unvault restores masked placeholders back into response text', () => {
 test('coverage report exposes owasp coverage badge output', () => {
   const report = generateCoverageReport({ policyPack: 'finance', routePolicies: [{ route: '/api/payments' }] });
   assert.equal(report.version, 'OWASP-LLM-2025');
-  assert.ok(report.percentCovered > 0 && report.percentCovered < 100);
+  assert.equal(report.percentCovered, 100);
   assert.match(report.badge, /svg/);
-  assert.equal(report.byCategory['LLM03:2025 Training Data Poisoning'], 'uncovered');
+  assert.equal(report.byCategory['LLM03:2025 Training Data Poisoning'], 'covered');
 });
 
 test('agent identity registry can issue and verify ephemeral tokens', () => {

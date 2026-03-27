@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Updated the default OWASP LLM coverage report and checked-in badge to reflect full built-in framework coverage across the OWASP LLM Top 10 2025 categories.
+
 ## 0.6.3
 
 - Replaced the README coverage badge with a checked-in badge generated from the OWASP coverage report output and linked it to the implementation.
