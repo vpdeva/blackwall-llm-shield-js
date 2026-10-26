@@ -1,3 +1,9 @@
+# Migrating to 0.7.0
+
+- **Signing secrets.** `AgentIdentityRegistry()` and `AuditTrail()` no longer fall back to a shared constant. Pass `options.secret` or set `BLACKWALL_PASSPORT_SECRET` and `BLACKWALL_AUDIT_SECRET`. Without one you get a random per-process secret and a `BlackwallWarning` process warning: signatures made by one process won't verify in another. Signatures created by 0.6.x under the old default constant will no longer verify; re-issue them.
+- **Semantic scoring.** Run `npm install @xenova/transformers` if you use `createOptionalLocalIntentScorer()` with the local model. Without it the lightweight scorer is used.
+- **Identifier labels.** TFN and Medicare findings now require a valid checksum, so test fixtures with made-up numbers may stop producing `tfn` or `medicare` findings. Use checksum-valid examples such as TFN `123 456 782` and Medicare `2123 45670 1`.
+
 # Migrating to 0.1.9
 
 ## Stable Contracts

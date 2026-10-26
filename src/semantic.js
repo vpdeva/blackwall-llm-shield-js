@@ -40,9 +40,14 @@ class TransformersIntentScorer {
 async function createOptionalLocalIntentScorer(options = {}) {
   try {
     const { pipeline } = require('@xenova/transformers');
-    const classifier = await pipeline('text-classification', options.model || 'ProtectAI/deberta-v3-base-prompt-injection-v2');
+    const classifier = await pipeline('text-classification', options.model || 'ProtectAI/deberta-v3-base-prompt-injection-v2', options.revision ? { revision: options.revision } : undefined);
     return new TransformersIntentScorer(classifier, options);
-  } catch {
+  } catch (err) {
+    // @xenova/transformers is an optional peer dependency; say once why semantic scoring fell back.
+    if (!createOptionalLocalIntentScorer.warned && typeof process !== 'undefined' && process.emitWarning) {
+      createOptionalLocalIntentScorer.warned = true;
+      process.emitWarning(`Local semantic model unavailable (${err && err.code === 'MODULE_NOT_FOUND' ? 'install @xenova/transformers to enable it' : err && err.message}); using the lightweight intent scorer.`, 'BlackwallWarning');
+    }
     return new LightweightIntentScorer(options);
   }
 }

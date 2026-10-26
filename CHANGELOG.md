@@ -1,8 +1,24 @@
 # Changelog
 
-## Unreleased
+## 0.7.0
 
+Security hardening release. Read "Migrating to 0.7.0" in MIGRATING.md before upgrading.
+
+### Security
+- Removed the shared default signing secrets (`blackwall-agent-passport-secret`, `blackwall-default-secret`) from `AgentIdentityRegistry` and `AuditTrail`. They now use `options.secret`, then `BLACKWALL_PASSPORT_SECRET` / `BLACKWALL_AUDIT_SECRET`, then a random per-process secret with a warning. Anyone who knew the old constant could forge passports and audit signatures for any deployment that didn't set its own.
+
+### Supply chain
+- `@xenova/transformers` moved from `dependencies` to an optional peer dependency. A default install drops from about 278 MB of packages to none. Install it yourself to keep local semantic scoring; without it Blackwall uses the lightweight intent scorer and warns once.
+- `createOptionalLocalIntentScorer()` accepts `revision` so you can pin the Hugging Face model revision it downloads.
+
+### Docs
 - Updated the default OWASP LLM coverage report and checked-in badge to reflect full built-in framework coverage across the OWASP LLM Top 10 2025 categories.
+
+### Detection
+- Added checksum-validated detection for NZ IRD numbers (`nzIrd`) and validated the existing AU TFN and Medicare patterns. A number with the right shape but a failing checksum is no longer labelled as a government identifier, which removes a large class of false positives (order numbers, references, phone numbers).
+- IRD and Medicare findings now classify a request as `restricted`, the same as TFN.
+- Added `classifyIdentifiers()`, which reports ABN and NZBN alongside personal identifiers. Business identifiers are public registry data and are never masked by `maskText()`, so evidence such as "NZBN 9429051850012" survives intact.
+- Every checksum was cross-checked against python-stdnum, and the JS and Python packages agree on 80,000 shared random inputs. This found and fixed an ABN edge case: numbers starting with "10" pass mod-89 but can never be issued.
 
 ## 0.6.3
 
