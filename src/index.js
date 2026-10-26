@@ -11,11 +11,14 @@ const {
 } = require('./providers');
 
 const SENSITIVE_PATTERNS = {
+  // Checksum-bearing national identifiers run first, before the broad phone pattern can claim their digits.
+  // Each has a validator in IDENTIFIER_VALIDATORS; a match that fails its checksum is left for later patterns.
+  nzIrd: /(?<![\d-])(?:\d{2,3}[\s-]?\d{3}[\s-]?\d{3})(?![\d-])/g,
+  tfn: /(?<![\d-])\d{3}[\s-]?\d{3}[\s-]?\d{3}(?![\d-])/g,
+  medicare: /(?<![\d-])[2-6]\d{3}\s?\d{5}\s?\d(?:[\s/-]?[1-9])?(?![\d-])/g,
   email: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g,
-  phone: /(\+?61\s?)?(\(0\d\)|0\d)[\s-]?\d{4}[\s-]?\d{4}|\+?\d{1,3}[\s-]?\(?\d{2,4}\)?[\s-]?\d{3,4}[\s-]?\d{3,4}/g,
   creditCard: /\b(?:\d{4}[\s-]?){3}\d{4}\b/g,
-  medicare: /\b\d{4}\s?\d{5}\s?\d\b/g,
-  tfn: /\b\d{3}[\s-]?\d{3}[\s-]?\d{3}\b/g,
+  phone: /(\+?61\s?)?(\(0\d\)|0\d)[\s-]?\d{4}[\s-]?\d{4}|\+?\d{1,3}[\s-]?\(?\d{2,4}\)?[\s-]?\d{3,4}[\s-]?\d{3,4}/g,
   passport: /\b[A-Z]{1,2}\d{6,9}\b/g,
   license: /\b\d{8,10}\b/g,
   address: /\b\d{1,5}\s+[A-Za-z\s]+(?:Street|St|Avenue|Ave|Road|Rd|Drive|Dr|Court|Ct|Lane|Ln|Way|Place|Pl)\b/gi,
@@ -25,6 +28,99 @@ const SENSITIVE_PATTERNS = {
   apiKey: /\b(?:sk|rk|pk|api)[-_][A-Za-z0-9_-]{12,}\b/g,
   bearerToken: /\bBearer\s+[A-Za-z0-9\-._~+/]+=*\b/gi,
 };
+
+const onlyDigits = (value) => String(value || '').replace(/\D/g, '');
+
+/** NZ IRD number: 8 or 9 digits, 10,000,000 to 150,000,000, mod-11 check digit with a secondary weighting. */
+function isValidNzIrd(value) {
+  let d = onlyDigits(value);
+  if (d.length !== 8 && d.length !== 9) return false;
+  d = d.padStart(9, '0');
+  const n = Number(d);
+  if (n < 10000000 || n > 150000000) return false;
+  const base = d.slice(0, 8).split('').map(Number);
+  const check = Number(d[8]);
+  for (const weights of [[3, 2, 7, 6, 5, 4, 3, 2], [7, 4, 3, 2, 5, 2, 7, 6]]) {
+    const rem = base.reduce((a, v, i) => a + v * weights[i], 0) % 11;
+    const calc = rem === 0 ? 0 : 11 - rem;
+    if (calc !== 10) return calc === check;
+  }
+  return false;
+}
+
+/** Australian Tax File Number: 9 digits whose weighted sum is divisible by 11. */
+function isValidAuTfn(value) {
+  const d = onlyDigits(value);
+  const w = [1, 4, 3, 7, 5, 8, 6, 9, 10];
+  return d.length === 9 && d.split('').reduce((a, v, i) => a + Number(v) * w[i], 0) % 11 === 0;
+}
+
+/** Australian Medicare card: 10 digits (plus optional IRN), first digit 2-6, weighted check digit in position 9. */
+function isValidAuMedicare(value) {
+  const d = onlyDigits(value);
+  if ((d.length !== 10 && d.length !== 11) || !'23456'.includes(d[0])) return false;
+  const w = [1, 3, 7, 9, 1, 3, 7, 9];
+  return d.slice(0, 8).split('').reduce((a, v, i) => a + Number(v) * w[i], 0) % 10 === Number(d[8]);
+}
+
+/** Australian Business Number: 11 digits, first digit minus one, weighted sum divisible by 89. Check digits are always 11-99. */
+function isValidAuAbn(value) {
+  const d = onlyDigits(value);
+  if (d.length !== 11 || d[0] === '0' || d.startsWith('10')) return false;
+  const nums = d.split('').map(Number);
+  nums[0] -= 1;
+  const w = [10, 1, 3, 5, 7, 9, 11, 13, 15, 17, 19];
+  return nums.reduce((a, v, i) => a + v * w[i], 0) % 89 === 0;
+}
+
+/** New Zealand Business Number: 13-digit GS1 GLN starting 94, GS1 mod-10 check digit. */
+function isValidNzbn(value) {
+  const d = onlyDigits(value);
+  if (d.length !== 13 || !d.startsWith('94')) return false;
+  const total = d.slice(0, 12).split('').reduce((a, v, i) => a + Number(v) * (i % 2 ? 3 : 1), 0);
+  return (10 - (total % 10)) % 10 === Number(d[12]);
+}
+
+const IDENTIFIER_VALIDATORS = { nzIrd: isValidNzIrd, tfn: isValidAuTfn, medicare: isValidAuMedicare };
+
+// Business identifiers are public registry data, often required as evidence ("provide your NZBN").
+// classifyIdentifiers() reports them, but maskText() never masks them by default.
+const BUSINESS_IDENTIFIER_PATTERNS = {
+  auAbn: [/(?<!\d)\d{2}\s?\d{3}\s?\d{3}\s?\d{3}(?!\d)/g, isValidAuAbn],
+  nzbn: [/(?<!\d)94\d{11}(?!\d)/g, isValidNzbn],
+};
+
+/** Report checksum-valid national identifiers in text without changing it. */
+function classifyIdentifiers(text) {
+  const src = String(text || '');
+  const found = [];
+  for (const [type, validator] of Object.entries(IDENTIFIER_VALIDATORS)) {
+    for (const m of src.matchAll(new RegExp(SENSITIVE_PATTERNS[type].source, 'g'))) {
+      if (validator(m[0])) found.push({ type, personal: true, span: [m.index, m.index + m[0].length] });
+    }
+  }
+  for (const [type, [pattern, validator]] of Object.entries(BUSINESS_IDENTIFIER_PATTERNS)) {
+    for (const m of src.matchAll(new RegExp(pattern.source, 'g'))) {
+      if (validator(m[0])) found.push({ type, personal: false, span: [m.index, m.index + m[0].length] });
+    }
+  }
+  return found;
+}
+
+const EPHEMERAL_SECRET_WARNED = new Set();
+
+/** Use the caller's secret, then the environment, then a random per-process secret. Never a shared constant. */
+function resolveSecret(provided, envName, label) {
+  if (provided) return provided;
+  const fromEnv = typeof process !== 'undefined' && process.env ? process.env[envName] : undefined;
+  if (fromEnv) return fromEnv;
+  if (!EPHEMERAL_SECRET_WARNED.has(label)) {
+    EPHEMERAL_SECRET_WARNED.add(label);
+    const msg = `${label}: no secret configured; using a random per-process secret. Signatures will not verify across processes. Set ${envName} or pass options.secret for durable signatures.`;
+    if (typeof process !== 'undefined' && process.emitWarning) process.emitWarning(msg, 'BlackwallWarning');
+  }
+  return crypto.randomBytes(32).toString('hex');
+}
 
 const FIELD_HINTS = [
   'password',
@@ -46,6 +142,7 @@ const FIELD_HINTS = [
   'dob',
   'birth',
   'tfn',
+  'ird',
 ];
 
 const ENTERPRISE_ACTION_ORDER = Object.freeze({
@@ -603,7 +700,7 @@ class DataClassificationGate {
   classify({ metadata = {}, findings = [], messages = [] } = {}) {
     if (metadata.classification) return metadata.classification;
     const types = findings.map((item) => item.type).filter(Boolean);
-    if (types.some((type) => ['creditCard', 'tfn', 'passport', 'license', 'apiKey', 'jwt', 'bearerToken'].includes(type))) return 'restricted';
+    if (types.some((type) => ['creditCard', 'tfn', 'nzIrd', 'medicare', 'passport', 'license', 'apiKey', 'jwt', 'bearerToken'].includes(type))) return 'restricted';
     if (types.length) return 'confidential';
     const text = JSON.stringify(messages || []).toLowerCase();
     if (/\bconfidential|restricted|secret\b/.test(text)) return 'confidential';
@@ -1488,9 +1585,21 @@ function maskText(text, options = {}) {
   const counters = {};
   let masked = applyDifferentialPrivacyNoise(sanitized, options);
 
+  // Shield checksum-valid business identifiers (ABN, NZBN) from every pattern, including the broad phone rule.
+  const protectedIds = [];
+  for (const [pattern, validator] of Object.values(BUSINESS_IDENTIFIER_PATTERNS)) {
+    masked = masked.replace(new RegExp(pattern.source, 'g'), (match) => {
+      if (!validator(match)) return match;
+      protectedIds.push(match);
+      return `\uE000${String.fromCharCode(0xE100 + protectedIds.length - 1)}\uE000`;
+    });
+  }
+
   for (const [type, regex] of Object.entries(SENSITIVE_PATTERNS)) {
     counters[type] = 0;
+    const validator = IDENTIFIER_VALIDATORS[type];
     masked = masked.replace(cloneRegex(regex), (match) => {
+      if (validator && !validator(match)) return match;
       counters[type] += 1;
       const token = placeholder(type, counters[type]);
       vault[token] = match;
@@ -1512,6 +1621,10 @@ function maskText(text, options = {}) {
   masked = contextual.masked;
   findings.push(...contextual.findings);
   Object.assign(vault, contextual.vault);
+
+  protectedIds.forEach((original, i) => {
+    masked = masked.split(`\uE000${String.fromCharCode(0xE100 + i)}\uE000`).join(original);
+  });
 
   return {
     original: sanitized,
@@ -2919,7 +3032,7 @@ class AgentIdentityRegistry {
   constructor(options = {}) {
     this.identities = new Map();
     this.ephemeralTokens = new Map();
-    this.secret = options.secret || 'blackwall-agent-passport-secret';
+    this.secret = resolveSecret(options.secret, 'BLACKWALL_PASSPORT_SECRET', 'AgentIdentityRegistry');
   }
 
   register(agentId, profile = {}) {
@@ -4107,7 +4220,7 @@ class RetrievalSanitizer {
 
 class AuditTrail {
   constructor(options = {}) {
-    this.secret = options.secret || 'blackwall-default-secret';
+    this.secret = resolveSecret(options.secret, 'BLACKWALL_AUDIT_SECRET', 'AuditTrail');
     this.events = [];
     this.identityResolver = options.identityResolver || null;
   }
@@ -4558,6 +4671,13 @@ module.exports = {
   VisualInstructionDetector,
   WorldviewPolicyRouter,
   SENSITIVE_PATTERNS,
+  BUSINESS_IDENTIFIER_PATTERNS,
+  classifyIdentifiers,
+  isValidNzIrd,
+  isValidAuTfn,
+  isValidAuMedicare,
+  isValidAuAbn,
+  isValidNzbn,
   PROMPT_INJECTION_RULES,
   POLICY_PACKS,
   SHIELD_PRESETS,
